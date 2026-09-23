@@ -1,0 +1,10 @@
+f6620d27526e8811e1145524e13430cdf864a804e3efae55bb3c4fd4f0735218  ./.github/workflows/build-tvos-ipa.yml
+321c9406ab34849dc8b6741e5588e51561c44d2c3523f5bd20455b143bcff57b  ./.gitignore
+0fb3a396fd2408910ea7d187fff1d6fe8410fb73463e04a0239c9e52af327532  ./LICENSE-SCRIPTS
+4027bda9d429fcd700a42c28687ad009b3a63ad279cd279c4dcdc93e5c7e7f19  ./LICENSES.md
+47a7b3bb4ddea98b45ef3b58c9c7f13433c680edb67a39d8e47317b5b4ed3497  ./README.md
+db2e597494f52a2701421183af452c618661c0a556c3135e75240a7183da9c98  ./patches/mgba-multi.patch
+a96c78f015baf1fd89128764dab7afde9728d5fe28e293dcaca93efaf7a1484a  ./patches/retroarch-unsigned-frameworks.patch
+19a0f4478c51e79cf3e16bdbe1302d01df21cedbf7225b13deeb220b9dc4164e  ./scripts/build-unsigned-ipa.sh
+4014ce49f0a94b8ef62fa2e95b43f657b13bad4d809763cad240d048752d8c61  ./scripts/validate-ipa.sh
+04973b33f62837eda4eb9e655cba306e0002840f873a6d00cea770b6f2e2e2e4  ./versions.env

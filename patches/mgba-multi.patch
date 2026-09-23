@@ -1,0 +1,1970 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 834e9fd9ceb94a972941fb7b12494270702601e8..c4b63b8b1da29600e32662063aed79ae20267d56 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -69,6 +69,7 @@ if(NOT LIBMGBA_ONLY)
+ 	set(BUILD_QT ON CACHE BOOL "Build Qt frontend")
+ 	set(BUILD_SDL ON CACHE BOOL "Build SDL frontend")
+ 	set(BUILD_LIBRETRO OFF CACHE BOOL "Build libretro core")
++	set(BUILD_LIBRETRO_MULTI OFF CACHE BOOL "Build multi-instance libretro core")
+ 	set(BUILD_PERF OFF CACHE BOOL "Build performance profiling tool")
+ 	set(BUILD_TEST OFF CACHE BOOL "Build testing harness")
+ 	set(BUILD_SUITE OFF CACHE BOOL "Build test suite")
+@@ -137,7 +138,7 @@ if(NOT LIBMGBA_ONLY)
+ 	mark_as_advanced(LIBDIR)
+ endif()
+ 
+-if (BUILD_LIBRETRO)
++if (BUILD_LIBRETRO OR BUILD_LIBRETRO_MULTI)
+ 	set(LIBRETRO_LIBDIR "${LIBDIR}" CACHE PATH "Installed library directory (Libretro)")
+ 	mark_as_advanced(LIBRETRO_LIBDIR)
+ endif()
+@@ -243,7 +244,17 @@ elseif(UNIX)
+ endif()
+ 
+ if(APPLE)
+-	execute_process(COMMAND xcrun --show-sdk-version OUTPUT_VARIABLE MACOSX_SDK)
++	if(CMAKE_SYSTEM_NAME STREQUAL "tvOS")
++		set(MGBA_APPLE_SDK appletvos)
++	elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
++		set(MGBA_APPLE_SDK iphoneos)
++	else()
++		set(MGBA_APPLE_SDK macosx)
++	endif()
++	execute_process(
++		COMMAND xcrun --sdk ${MGBA_APPLE_SDK} --show-sdk-version
++		OUTPUT_VARIABLE MACOSX_SDK
++		OUTPUT_STRIP_TRAILING_WHITESPACE)
+ 	if(NOT MACOSX_SDK)
+ 		message(WARNING "Could not detect SDK version; defaulting to system version. Is SDKROOT set?")
+ 		set(MACOSX_SDK ${CMAKE_SYSTEM_VERSION})
+@@ -256,7 +267,7 @@ if(APPLE)
+ 		add_link_options(LINKER:-no_warn_duplicate_libraries)
+ 	endif()
+ 
+-	if(NOT CMAKE_SYSTEM_VERSION VERSION_LESS "10.0") # Darwin 10.x is Mac OS X 10.6
++	if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND NOT CMAKE_SYSTEM_VERSION VERSION_LESS "10.0") # Darwin 10.x is Mac OS X 10.6
+ 		set(CMAKE_OSX_DEPLOYMENT_TARGET "10.6")
+ 	endif()
+ 	# Not supported until Xcode 9
+@@ -1025,6 +1036,7 @@ endif()
+ 
+ if(BUILD_LIBRETRO)
+ 	file(GLOB RETRO_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro/*.c)
++	list(FILTER RETRO_SRC EXCLUDE REGEX "libretro_multi\\.c$")
+ 	add_library(${BINARY_NAME}_libretro SHARED ${CORE_SRC} ${RETRO_SRC} ${CORE_VFS_SRC})
+ 	add_dependencies(${BINARY_NAME}_libretro ${BINARY_NAME}-version-info)
+ 	set_target_properties(${BINARY_NAME}_libretro PROPERTIES PREFIX "" COMPILE_DEFINITIONS "__LIBRETRO__;COLOR_16_BIT;COLOR_5_6_5;DISABLE_THREADING;MGBA_STANDALONE;${OS_DEFINES};${FUNCTION_DEFINES};ENABLE_VFS;MINIMAL_CORE=2")
+@@ -1036,6 +1048,26 @@ if(BUILD_LIBRETRO)
+ 	endif()
+ endif()
+ 
++if(BUILD_LIBRETRO_MULTI)
++	set(RETRO_MULTI_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro/libretro_multi.c)
++	set(RETRO_MULTI_LINK_SRC)
++	if(M_CORE_GBA)
++		list(APPEND RETRO_MULTI_LINK_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/gba/sio/lockstep.c)
++	endif()
++	if(M_CORE_GB)
++		list(APPEND RETRO_MULTI_LINK_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/gb/sio/lockstep.c)
++	endif()
++	add_library(${BINARY_NAME}_multi_libretro SHARED ${CORE_SRC} ${RETRO_MULTI_LINK_SRC} ${RETRO_MULTI_SRC} ${CORE_VFS_SRC})
++	add_dependencies(${BINARY_NAME}_multi_libretro ${BINARY_NAME}-version-info)
++	set_target_properties(${BINARY_NAME}_multi_libretro PROPERTIES PREFIX "" COMPILE_DEFINITIONS "__LIBRETRO__;COLOR_16_BIT;COLOR_5_6_5;DISABLE_THREADED_VIDEO;MGBA_STANDALONE;${OS_DEFINES};${FUNCTION_DEFINES};ENABLE_VFS;MINIMAL_CORE=2")
++	target_link_libraries(${BINARY_NAME}_multi_libretro ${OS_LIB})
++	if(MSVC)
++		install(TARGETS ${BINARY_NAME}_multi_libretro RUNTIME DESTINATION ${LIBRETRO_LIBDIR} COMPONENT ${BINARY_NAME}_multi_libretro)
++	else()
++		install(TARGETS ${BINARY_NAME}_multi_libretro LIBRARY DESTINATION ${LIBRETRO_LIBDIR} COMPONENT ${BINARY_NAME}_multi_libretro NAMELINK_SKIP)
++	endif()
++endif()
++
+ if(BUILD_QT AND (WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux") AND ENABLE_VFS)
+ 	set(BUILD_UPDATER ON)
+ endif()
+@@ -1387,6 +1419,7 @@ if(NOT QUIET AND NOT LIBMGBA_ONLY)
+ 	message(STATUS "	Video test suite: ${BUILD_CINEMA}")
+ 	message(STATUS "Cores:")
+ 	message(STATUS "	Libretro core: ${BUILD_LIBRETRO}")
++	message(STATUS "	Multi-instance Libretro core: ${BUILD_LIBRETRO_MULTI}")
+ 	message(STATUS "Libraries:")
+ 	message(STATUS "	Static: ${BUILD_STATIC}")
+ 	message(STATUS "	Shared: ${BUILD_SHARED}")
+diff --git a/README_MULTI_LIBRETRO.md b/README_MULTI_LIBRETRO.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..2bd5757cc2604755fd009661360805d137379138
+--- /dev/null
++++ b/README_MULTI_LIBRETRO.md
+@@ -0,0 +1,113 @@
++# mGBA Multi libretro core
++
++This fork adds a separate `mGBA Multi` libretro target. It keeps the normal
++mGBA libretro core unchanged and places one, two, or three emulated systems in
++a single horizontal RetroArch video surface.
++
++## Features
++
++- One to three local instances, with two as the default.
++- Independent controllers on RetroArch ports 1, 2, and 3.
++- One mixed audio stream, or audio from a selected player.
++- Separate battery saves for every instance.
++- One combined RetroArch save state containing every running instance.
++- Local GBA link emulation for two or three instances.
++- Local GB/GBC link emulation for players 1 and 2. A third GB/GBC instance can
++  run beside them but is not connected, matching the two-peer cable protocol.
++- RetroArch subsystems for loading two or three different ROMs. Normal
++  **Load Content** duplicates the selected ROM for the configured number of
++  instances.
++
++## Build
++
++A desktop build with working thread support is required.
++
++```sh
++cmake -S . -B build-multi \
++  -DBUILD_LIBRETRO_MULTI=ON \
++  -DBUILD_LIBRETRO=OFF \
++  -DBUILD_QT=OFF \
++  -DBUILD_SDL=OFF \
++  -DENABLE_SCRIPTING=OFF
++cmake --build build-multi --target mgba_multi_libretro --parallel
++```
++
++The result is `mgba_multi_libretro.so` on Linux,
++`mgba_multi_libretro.dll` on Windows, or
++`mgba_multi_libretro.dylib` on macOS. Copy it to RetroArch's cores
++directory. Copy `src/platform/libretro/mgba_multi_libretro.info` to
++RetroArch's info directory if you want local metadata.
++
++### tvOS
++
++On macOS with Xcode and the Apple TV SDK installed, build an arm64 tvOS core
++with:
++
++```sh
++cmake -S . -B build-tvos -G Xcode \
++  -DCMAKE_SYSTEM_NAME=tvOS \
++  -DCMAKE_OSX_SYSROOT=appletvos \
++  -DCMAKE_OSX_ARCHITECTURES=arm64 \
++  -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
++  -DBUILD_LIBRETRO_MULTI=ON \
++  -DBUILD_LIBRETRO=OFF \
++  -DBUILD_QT=OFF \
++  -DBUILD_SDL=OFF \
++  -DBUILD_GL=OFF \
++  -DBUILD_GLES2=OFF \
++  -DBUILD_GLES3=OFF \
++  -DENABLE_SCRIPTING=OFF \
++  -DENABLE_DEBUGGERS=OFF \
++  -DDISABLE_DEPS=ON \
++  -DSKIP_LIBRARY=ON
++cmake --build build-tvos --config Release \
++  --target mgba_multi_libretro --parallel
++```
++
++The output is a device-only arm64 dylib. RetroArch's Apple build converts it
++to an embedded framework before packaging the tvOS app.
++
++## Use
++
++1. Load the **mGBA Multi** core.
++2. Open **Quick Menu > Core Options**.
++3. Set **Instances** to 1, 2, or 3 and choose whether **Local link cable** is
++   enabled.
++4. Restart or reload the content after changing either of those two options.
++5. Assign controllers to RetroArch ports 1 through 3.
++
++Loading one ROM through **Load Content** runs that ROM in every instance. To
++use different games or versions, use RetroArch's **Load Subsystem** flow and
++choose either **mGBA Link Cable (2 ROMs)** or
++**mGBA Link Cable (3 ROMs)**.
++
++## Save files
++
++Player 1 uses RetroArch's normal save-memory interface, so RetroArch creates
++its ordinary `.srm` file. The core owns the extra files:
++
++| Player | Save file |
++| --- | --- |
++| 1 | RetroArch's normal `<content>.srm` |
++| 2 | `<ROM stem>.p2.srm` |
++| 3 | `<ROM stem>.p3.srm` |
++
++Player 2 and 3 saves are written in RetroArch's save directory every 300
++frames and when content is unloaded. A RetroArch save state is a fixed
++container that stores all active instances together; it must be loaded with
++the same instance count.
++
++## Link behavior and limitations
++
++- Link emulation is local to the instances inside this core. It is separate
++  from RetroArch netplay.
++- All linked instances must use the same hardware family. Mixed GB/GBC and
++  GBA subsystem loads still run, but link is disabled.
++- GBA connects all active instances (up to three). GB/GBC connects only
++  players 1 and 2.
++- Link compatibility still depends on the games themselves. For trading or
++  multiplayer, load ROMs that implement mutually compatible link protocols.
++- The instance count and link topology are fixed for a content session and
++  take effect after content restart.
++
++This fork retains mGBA's Mozilla Public License 2.0 licensing.
+diff --git a/include/mgba/core/thread.h b/include/mgba/core/thread.h
+index 7164f6409cc9aec8df893df64d495a6f38b9c3f7..aebd19523187816b102f084b515d8444fe7b09b3 100644
+--- a/include/mgba/core/thread.h
++++ b/include/mgba/core/thread.h
+@@ -102,6 +102,9 @@ struct mCoreThreadInternal {
+ #endif
+ 
+ bool mCoreThreadStart(struct mCoreThread* threadContext);
++bool mCoreThreadPrepare(struct mCoreThread* threadContext);
++bool mCoreThreadLaunch(struct mCoreThread* threadContext);
++void mCoreThreadUnprepare(struct mCoreThread* threadContext);
+ bool mCoreThreadHasStarted(struct mCoreThread* threadContext);
+ bool mCoreThreadHasExited(struct mCoreThread* threadContext);
+ void mCoreThreadEnd(struct mCoreThread* threadContext);
+diff --git a/src/core/thread.c b/src/core/thread.c
+index 87a6dc9fc74d28f457eb6166ee9e30b7ebb66c9d..e3f7387efcd56d5fbe9c5e8b2d2205326112a045 100644
+--- a/src/core/thread.c
++++ b/src/core/thread.c
+@@ -423,8 +423,14 @@ static THREAD_ENTRY _mCoreThreadRun(void* context) {
+ 	THREAD_EXIT(0);
+ }
+ 
+-bool mCoreThreadStart(struct mCoreThread* threadContext) {
++bool mCoreThreadPrepare(struct mCoreThread* threadContext) {
++	if (threadContext->impl) {
++		return false;
++	}
+ 	threadContext->impl = calloc(1, sizeof(*threadContext->impl));
++	if (!threadContext->impl) {
++		return false;
++	}
+ 	threadContext->impl->state = mTHREAD_INITIALIZED;
+ 	threadContext->impl->requested = 0;
+ 	threadContext->logger.p = threadContext;
+@@ -452,6 +458,13 @@ bool mCoreThreadStart(struct mCoreThread* threadContext) {
+ #endif
+ 
+ 	mCoreSyncLoadCoreOpts(&threadContext->impl->sync, &threadContext->core->opts);
++	return true;
++}
++
++bool mCoreThreadLaunch(struct mCoreThread* threadContext) {
++	if (!threadContext->impl || threadContext->impl->state != mTHREAD_INITIALIZED) {
++		return false;
++	}
+ 
+ 	MutexLock(&threadContext->impl->stateMutex);
+ 	ThreadCreate(&threadContext->impl->thread, _mCoreThreadRun, threadContext);
+@@ -463,6 +476,33 @@ bool mCoreThreadStart(struct mCoreThread* threadContext) {
+ 	return true;
+ }
+ 
++bool mCoreThreadStart(struct mCoreThread* threadContext) {
++	if (!mCoreThreadPrepare(threadContext)) {
++		return false;
++	}
++	if (!mCoreThreadLaunch(threadContext)) {
++		mCoreThreadUnprepare(threadContext);
++		return false;
++	}
++	return true;
++}
++
++void mCoreThreadUnprepare(struct mCoreThread* threadContext) {
++	if (!threadContext->impl || threadContext->impl->state != mTHREAD_INITIALIZED) {
++		return;
++	}
++	MutexDeinit(&threadContext->impl->stateMutex);
++	ConditionDeinit(&threadContext->impl->stateOnThreadCond);
++	ConditionDeinit(&threadContext->impl->stateOffThreadCond);
++	MutexDeinit(&threadContext->impl->sync.videoFrameMutex);
++	ConditionDeinit(&threadContext->impl->sync.videoFrameAvailableCond);
++	ConditionDeinit(&threadContext->impl->sync.videoFrameRequiredCond);
++	ConditionDeinit(&threadContext->impl->sync.audioRequiredCond);
++	MutexDeinit(&threadContext->impl->sync.audioBufferMutex);
++	free(threadContext->impl);
++	threadContext->impl = NULL;
++}
++
+ bool mCoreThreadHasStarted(struct mCoreThread* threadContext) {
+ 	if (!threadContext->impl) {
+ 		return false;
+diff --git a/src/gba/core.c b/src/gba/core.c
+index 8450f0d25d4b8e933b56370d01ba050f0a7f1405..60e35e1e82364a82fbd9b67e11b84d29ea40fa86 100644
+--- a/src/gba/core.c
++++ b/src/gba/core.c
+@@ -16,7 +16,7 @@
+ #include <mgba/internal/gba/io.h>
+ #include <mgba/internal/gba/debugger/cli.h>
+ #include <mgba/internal/gba/overrides.h>
+-#ifndef DISABLE_THREADING
++#if !defined(DISABLE_THREADING) && !defined(DISABLE_THREADED_VIDEO)
+ #include <mgba/feature/thread-proxy.h>
+ #endif
+ #ifdef BUILD_GLES3
+@@ -208,7 +208,7 @@ struct GBACore {
+ 	struct mVideoLogContext* logContext;
+ #endif
+ 	struct mCoreCallbacks logCallbacks;
+-#ifndef DISABLE_THREADING
++#if !defined(DISABLE_THREADING) && !defined(DISABLE_THREADED_VIDEO)
+ 	struct mVideoThreadProxy threadProxy;
+ #endif
+ 	struct mCPUComponent* components[CPU_COMPONENT_MAX];
+@@ -291,7 +291,7 @@ static bool _GBACoreInit(struct mCore* core) {
+ 	gbacore->glRenderer.outputTex = -1;
+ #endif
+ 
+-#ifndef DISABLE_THREADING
++#if !defined(DISABLE_THREADING) && !defined(DISABLE_THREADED_VIDEO)
+ 	mVideoThreadProxyCreate(&gbacore->threadProxy);
+ #endif
+ #ifndef MINIMAL_CORE
+@@ -389,7 +389,7 @@ static void _GBACoreLoadConfig(struct mCore* core, const struct mCoreConfig* con
+ 	mCoreConfigCopyValue(&core->config, config, "gba.forceGbp");
+ 	mCoreConfigCopyValue(&core->config, config, "vbaBugCompat");
+ 
+-#ifndef DISABLE_THREADING
++#if !defined(DISABLE_THREADING) && !defined(DISABLE_THREADED_VIDEO)
+ 	mCoreConfigCopyValue(&core->config, config, "threadedVideo");
+ #endif
+ 	mCoreConfigCopyValue(&core->config, config, "hwaccelVideo");
+@@ -755,7 +755,7 @@ static void _GBACoreReset(struct mCore* core) {
+ 			gbacore->glRenderer.scale = 1;
+ 		}
+ #endif
+-#ifndef DISABLE_THREADING
++#if !defined(DISABLE_THREADING) && !defined(DISABLE_THREADED_VIDEO)
+ 		if (mCoreConfigGetBoolValue(&core->config, "threadedVideo", &value) && value) {
+ 			if (!core->videoLogger) {
+ 				core->videoLogger = &gbacore->threadProxy.d;
+diff --git a/src/platform/libretro/libretro_multi.c b/src/platform/libretro/libretro_multi.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de5d0af859
+--- /dev/null
++++ b/src/platform/libretro/libretro_multi.c
+@@ -0,0 +1,1603 @@
++/* Copyright (c) 2013-2026 mGBA contributors
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++/*
++ * Multi-instance libretro frontend for mGBA.
++ *
++ * This is deliberately a separate frontend rather than a change to the
++ * regular libretro core. One libretro core still presents one video/audio
++ * stream to RetroArch; this frontend owns up to three mCore instances and
++ * composites those streams horizontally.
++ */
++
++#include "libretro.h"
++
++#include <mgba-util/common.h>
++#include <mgba-util/audio-buffer.h>
++#include <mgba-util/memory.h>
++#include <mgba-util/threading.h>
++#include <mgba-util/vfs.h>
++
++#include <mgba/core/cheats.h>
++#include <mgba/core/core.h>
++#include <mgba/core/log.h>
++#include <mgba/core/serialize.h>
++#include <mgba/core/sync.h>
++#include <mgba/core/thread.h>
++#include <mgba/core/version.h>
++
++#ifdef M_CORE_GB
++#include <mgba/gb/core.h>
++#include <mgba/internal/gb/gb.h>
++#include <mgba/internal/gb/mbc.h>
++#include <mgba/internal/gb/overrides.h>
++#include <mgba/internal/gb/sio.h>
++#include <mgba/internal/gb/sio/lockstep.h>
++#endif
++
++
++#ifdef M_CORE_GBA
++#include <mgba/gba/core.h>
++#include <mgba/gba/interface.h>
++#include <mgba/internal/gba/gba.h>
++#include <mgba/internal/gba/sio/lockstep.h>
++#endif
++
++#include <ctype.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <limits.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#ifdef DISABLE_THREADING
++#error "The multi-instance libretro core requires threading support"
++#endif
++
++#define MULTI_MAX_INSTANCES 3
++#define VIDEO_WIDTH_MAX 256
++#define VIDEO_HEIGHT_MAX 224
++#define COMPOSITE_WIDTH_MAX (VIDEO_WIDTH_MAX * MULTI_MAX_INSTANCES)
++#define VIDEO_BUFFER_PIXELS (VIDEO_WIDTH_MAX * VIDEO_HEIGHT_MAX)
++#define COMPOSITE_BUFFER_PIXELS (COMPOSITE_WIDTH_MAX * VIDEO_HEIGHT_MAX)
++#define SAVE_BUFFER_SIZE (128 * 1024)
++#define AUTOSAVE_INTERVAL_FRAMES 300
++#define STATE_HEADER_SIZE 32
++#define STATE_SLOT_SIZE (1024 * 1024)
++#define STATE_SLOT_PAYLOAD (STATE_SLOT_SIZE - sizeof(uint64_t))
++#define MULTI_STATE_VERSION 1
++#define MULTI_FRONTEND_VERSION "0.1.0"
++#define MULTI_SUBSYSTEM_2 0x4D474202U
++#define MULTI_SUBSYSTEM_3 0x4D474203U
++
++struct MultiGBAUser {
++#ifdef M_CORE_GBA
++	struct mLockstepThreadUser threaded;
++#endif
++	int preferredId;
++};
++
++struct MultiInstance {
++	struct mCore* core;
++	struct mCoreThread thread;
++	bool coreInitialized;
++	bool threadPrepared;
++	bool threadStarted;
++	bool linkAttached;
++
++	mColor* video;
++	void* romData;
++	size_t romSize;
++	uint8_t* saveData;
++	char contentPath[PATH_MAX];
++	char savePath[PATH_MAX];
++
++	int16_t* audio;
++	size_t audioCapacity;
++
++#ifdef M_CORE_GBA
++	struct GBASIOLockstepDriver gbaLink;
++	struct MultiGBAUser gbaUser;
++#endif
++#ifdef M_CORE_GB
++	struct GBSIOLockstepNode gbLink;
++#endif
++};
++
++#ifdef M_CORE_GB
++struct GBLinkContext {
++	struct GBSIOLockstep lockstep;
++	Mutex mutex;
++	struct MultiInstance* players[2];
++	int awake[2];
++	int32_t cyclesPosted[2];
++	unsigned waitMask;
++	bool initialized;
++};
++#endif
++
++static retro_environment_t environCallback;
++static retro_video_refresh_t videoCallback;
++static retro_audio_sample_batch_t audioCallback;
++static retro_input_poll_t inputPollCallback;
++static retro_input_state_t inputCallback;
++static retro_log_printf_t logCallback;
++
++static struct mLogger logger;
++static struct MultiInstance instances[MULTI_MAX_INSTANCES];
++static unsigned instanceCount;
++static bool linkRequested;
++static bool linkActive;
++static bool deferredSetup;
++static bool threadsStarted;
++static bool useBitmasks = true;
++static bool warnedRestart;
++static unsigned autosaveCounter;
++static unsigned audioSource;
++
++static mColor* compositeBuffer;
++static int16_t* mixedAudio;
++static size_t mixedAudioCapacity;
++static unsigned compositeWidth;
++static unsigned compositeHeight;
++static char libraryVersion[64];
++
++#ifdef M_CORE_GBA
++static struct GBASIOLockstepCoordinator gbaCoordinator;
++static bool gbaCoordinatorInitialized;
++#endif
++#ifdef M_CORE_GB
++static struct GBLinkContext gbLinkContext;
++#endif
++
++static const int keymap[] = {
++	RETRO_DEVICE_ID_JOYPAD_A,
++	RETRO_DEVICE_ID_JOYPAD_B,
++	RETRO_DEVICE_ID_JOYPAD_SELECT,
++	RETRO_DEVICE_ID_JOYPAD_START,
++	RETRO_DEVICE_ID_JOYPAD_RIGHT,
++	RETRO_DEVICE_ID_JOYPAD_LEFT,
++	RETRO_DEVICE_ID_JOYPAD_UP,
++	RETRO_DEVICE_ID_JOYPAD_DOWN,
++	RETRO_DEVICE_ID_JOYPAD_R,
++	RETRO_DEVICE_ID_JOYPAD_L,
++};
++
++static const struct retro_variable coreVariables[] = {
++	{ "mgba_multi_instances", "Instances (restart content); 2|1|3" },
++	{ "mgba_multi_link", "Local link cable (restart content); enabled|disabled" },
++	{ "mgba_multi_audio", "Audio output; mixed|player 1|player 2|player 3" },
++	{ "mgba_gb_model", "Game Boy model (restart content); Autodetect|Game Boy|Super Game Boy|Game Boy Color|Super Game Boy Color|Game Boy Advance" },
++	{ "mgba_use_bios", "Use BIOS file if found (restart content); ON|OFF" },
++	{ "mgba_skip_bios", "Skip BIOS intro (restart content); OFF|ON" },
++	{ "mgba_allow_opposing_directions", "Allow opposing directional input; no|yes" },
++	{ "mgba_idle_optimization", "Idle loop removal; Remove Known|Detect and Remove|Don't Remove" },
++	{ "mgba_frameskip", "Frameskip; 0|1|2|3|4|5|6|7|8|9|10" },
++	{ NULL, NULL },
++};
++
++static const struct retro_controller_description controllerTypes[] = {
++	{ "GBA/GB Joypad", RETRO_DEVICE_JOYPAD },
++};
++
++static const struct retro_controller_info controllerInfo[] = {
++	{ controllerTypes, 1 },
++	{ controllerTypes, 1 },
++	{ controllerTypes, 1 },
++	{ NULL, 0 },
++};
++
++static const struct retro_subsystem_rom_info subsystem2Roms[] = {
++	{ "Player 1 ROM", "gba|gb|gbc|sgb", false, false, true, NULL, 0 },
++	{ "Player 2 ROM", "gba|gb|gbc|sgb", false, false, true, NULL, 0 },
++};
++
++static const struct retro_subsystem_rom_info subsystem3Roms[] = {
++	{ "Player 1 ROM", "gba|gb|gbc|sgb", false, false, true, NULL, 0 },
++	{ "Player 2 ROM", "gba|gb|gbc|sgb", false, false, true, NULL, 0 },
++	{ "Player 3 ROM", "gba|gb|gbc|sgb", false, false, true, NULL, 0 },
++};
++
++static const struct retro_subsystem_info subsystemInfo[] = {
++	{ "mGBA Link Cable (2 ROMs)", "mgba_link_2", subsystem2Roms, 2, MULTI_SUBSYSTEM_2 },
++	{ "mGBA Link Cable (3 ROMs)", "mgba_link_3", subsystem3Roms, 3, MULTI_SUBSYSTEM_3 },
++	{ NULL, NULL, NULL, 0, 0 },
++};
++
++static void _retroLog(struct mLogger* logger, int category, enum mLogLevel level, const char* format, va_list args) {
++	UNUSED(logger);
++	if (!logCallback) {
++		return;
++	}
++
++	char message[512];
++	vsnprintf(message, sizeof(message), format, args);
++	enum retro_log_level retroLevel = RETRO_LOG_INFO;
++	switch (level) {
++	case mLOG_FATAL:
++	case mLOG_ERROR:
++		retroLevel = RETRO_LOG_ERROR;
++		break;
++	case mLOG_WARN:
++		retroLevel = RETRO_LOG_WARN;
++		break;
++	case mLOG_DEBUG:
++	case mLOG_STUB:
++	case mLOG_GAME_ERROR:
++		retroLevel = RETRO_LOG_DEBUG;
++		break;
++	case mLOG_INFO:
++	default:
++		break;
++	}
++	logCallback(retroLevel, "%s: %s\n", mLogCategoryName(category), message);
++}
++
++static void _frontendLog(enum retro_log_level level, const char* format, ...) {
++	if (!logCallback) {
++		return;
++	}
++	va_list args;
++	va_start(args, format);
++	char message[512];
++	vsnprintf(message, sizeof(message), format, args);
++	va_end(args);
++	logCallback(level, "mGBA Multi: %s\n", message);
++}
++
++static const char* _getVariable(const char* key) {
++	struct retro_variable var = { key, NULL };
++	if (environCallback && environCallback(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
++		return var.value;
++	}
++	return NULL;
++}
++
++static unsigned _requestedInstanceCount(void) {
++	const char* value = _getVariable("mgba_multi_instances");
++	long count = value ? strtol(value, NULL, 10) : 2;
++	if (count < 1) {
++		count = 1;
++	} else if (count > MULTI_MAX_INSTANCES) {
++		count = MULTI_MAX_INSTANCES;
++	}
++	return (unsigned) count;
++}
++
++static bool _requestedLink(void) {
++	const char* value = _getVariable("mgba_multi_link");
++	return !value || strcmp(value, "disabled") != 0;
++}
++
++static unsigned _requestedAudioSource(void) {
++	const char* value = _getVariable("mgba_multi_audio");
++	if (!value || strcmp(value, "mixed") == 0) {
++		return 0;
++	}
++	if (strcmp(value, "player 2") == 0) {
++		return 2;
++	}
++	if (strcmp(value, "player 3") == 0) {
++		return 3;
++	}
++	return 1;
++}
++
++static void _configureCore(struct mCore* core) {
++	struct mCoreOptions opts = {
++		.useBios = true,
++		.volume = 0x100,
++		.videoSync = true,
++		.audioSync = false,
++	};
++
++	const char* value = _getVariable("mgba_use_bios");
++	if (value) {
++		opts.useBios = strcmp(value, "ON") == 0;
++	}
++	value = _getVariable("mgba_skip_bios");
++	if (value) {
++		opts.skipBios = strcmp(value, "ON") == 0;
++	}
++	value = _getVariable("mgba_frameskip");
++	if (value) {
++		opts.frameskip = strtol(value, NULL, 10);
++	}
++
++#ifdef M_CORE_GB
++	value = _getVariable("mgba_gb_model");
++	if (value) {
++		enum GBModel model = GB_MODEL_AUTODETECT;
++		if (strcmp(value, "Game Boy") == 0) {
++			model = GB_MODEL_DMG;
++		} else if (strcmp(value, "Super Game Boy") == 0) {
++			model = GB_MODEL_SGB;
++		} else if (strcmp(value, "Game Boy Color") == 0) {
++			model = GB_MODEL_CGB;
++		} else if (strcmp(value, "Super Game Boy Color") == 0) {
++			model = GB_MODEL_SCGB;
++		} else if (strcmp(value, "Game Boy Advance") == 0) {
++			model = GB_MODEL_AGB;
++		}
++		const char* modelName = GBModelToName(model);
++		mCoreConfigSetDefaultValue(&core->config, "gb.model", modelName);
++		mCoreConfigSetDefaultValue(&core->config, "sgb.model", modelName);
++		mCoreConfigSetDefaultValue(&core->config, "cgb.model", modelName);
++		mCoreConfigSetDefaultValue(&core->config, "cgb.hybridModel", modelName);
++		mCoreConfigSetDefaultValue(&core->config, "cgb.sgbModel", modelName);
++	}
++#endif
++
++	value = _getVariable("mgba_allow_opposing_directions");
++	if (value) {
++		mCoreConfigSetDefaultIntValue(&core->config, "allowOpposingDirections", strcmp(value, "yes") == 0);
++	}
++	value = _getVariable("mgba_idle_optimization");
++	if (value) {
++		if (strcmp(value, "Don't Remove") == 0) {
++			mCoreConfigSetDefaultValue(&core->config, "idleOptimization", "ignore");
++		} else if (strcmp(value, "Detect and Remove") == 0) {
++			mCoreConfigSetDefaultValue(&core->config, "idleOptimization", "detect");
++		} else {
++			mCoreConfigSetDefaultValue(&core->config, "idleOptimization", "remove");
++		}
++	}
++
++	mCoreConfigLoadDefaults(&core->config, &opts);
++	mCoreLoadConfig(core);
++}
++
++static void _applyRuntimeSettings(void) {
++	const char* opposingDirections = _getVariable("mgba_allow_opposing_directions");
++	const char* frameskip = _getVariable("mgba_frameskip");
++	unsigned i;
++	for (i = 0; i < instanceCount; ++i) {
++		struct mCore* core = instances[i].core;
++		if (opposingDirections) {
++			mCoreConfigSetIntValue(&core->config, "allowOpposingDirections", strcmp(opposingDirections, "yes") == 0);
++			core->reloadConfigOption(core, "allowOpposingDirections", NULL);
++		}
++		if (frameskip) {
++			mCoreConfigSetIntValue(&core->config, "frameskip", strtol(frameskip, NULL, 10));
++			core->reloadConfigOption(core, "frameskip", NULL);
++		}
++	}
++	audioSource = _requestedAudioSource();
++
++	if (!warnedRestart && (_requestedInstanceCount() != instanceCount || _requestedLink() != linkRequested)) {
++		struct retro_message message = {
++			"Instance count/link change applies after content restart",
++			240,
++		};
++		environCallback(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
++		_frontendLog(RETRO_LOG_INFO, "%s", message.msg);
++		warnedRestart = true;
++	}
++}
++
++static void _getPathParts(const char* path, char* directory, size_t directorySize, char* stem, size_t stemSize) {
++	const char* basename = path && path[0] ? path : "content";
++	const char* slash = strrchr(basename, '/');
++	const char* backslash = strrchr(basename, '\\');
++	if (backslash && (!slash || backslash > slash)) {
++		slash = backslash;
++	}
++	if (slash) {
++		size_t length = (size_t) (slash - basename);
++		if (length >= directorySize) {
++			length = directorySize - 1;
++		}
++		memcpy(directory, basename, length);
++		directory[length] = '\0';
++		basename = slash + 1;
++	} else {
++		directory[0] = '\0';
++	}
++
++	const char* dot = strrchr(basename, '.');
++	size_t length = dot && dot > basename ? (size_t) (dot - basename) : strlen(basename);
++	if (length >= stemSize) {
++		length = stemSize - 1;
++	}
++	memcpy(stem, basename, length);
++	stem[length] = '\0';
++	if (!stem[0]) {
++		strncpy(stem, "content", stemSize - 1);
++		stem[stemSize - 1] = '\0';
++	}
++}
++
++static void _buildSavePath(struct MultiInstance* instance, unsigned player) {
++	instance->savePath[0] = '\0';
++	if (player == 0) {
++		return;
++	}
++
++	char fallbackDir[PATH_MAX];
++	char stem[PATH_MAX];
++	_getPathParts(instance->contentPath, fallbackDir, sizeof(fallbackDir), stem, sizeof(stem));
++	const char* saveDir = NULL;
++	environCallback(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &saveDir);
++	if (!saveDir || !saveDir[0]) {
++		saveDir = fallbackDir;
++	}
++
++	char suffix[16];
++	int suffixLength = snprintf(suffix, sizeof(suffix), ".p%u.srm", player + 1);
++	if (suffixLength < 0 || (size_t) suffixLength >= sizeof(suffix)) {
++		return;
++	}
++
++	const char* separator = saveDir && saveDir[0] ? PATH_SEP : "";
++	size_t directoryLength = saveDir && saveDir[0] ? strlen(saveDir) : 0;
++	size_t separatorLength = strlen(separator);
++	size_t stemLength = strlen(stem);
++	size_t reserved = directoryLength + separatorLength + (size_t) suffixLength;
++	if (reserved >= sizeof(instance->savePath)) {
++		_frontendLog(RETRO_LOG_WARN, "save directory is too long for player %u", player + 1);
++		return;
++	}
++	if (stemLength >= sizeof(instance->savePath) - reserved) {
++		stemLength = sizeof(instance->savePath) - reserved - 1;
++	}
++
++	char* output = instance->savePath;
++	if (directoryLength) {
++		memcpy(output, saveDir, directoryLength);
++		output += directoryLength;
++	}
++	if (separatorLength) {
++		memcpy(output, separator, separatorLength);
++		output += separatorLength;
++	}
++	memcpy(output, stem, stemLength);
++	output += stemLength;
++	memcpy(output, suffix, (size_t) suffixLength + 1);
++}
++
++static void _readOwnedSave(struct MultiInstance* instance) {
++	if (!instance->savePath[0]) {
++		return;
++	}
++	struct VFile* save = VFileOpen(instance->savePath, O_RDONLY);
++	if (!save) {
++		return;
++	}
++	ssize_t size = save->read(save, instance->saveData, SAVE_BUFFER_SIZE);
++	save->close(save);
++	if (size > 0) {
++		_frontendLog(RETRO_LOG_INFO, "loaded player save %s", instance->savePath);
++	}
++}
++
++static size_t _saveRamSize(const struct MultiInstance* instance) {
++	if (!instance->core) {
++		return 0;
++	}
++	switch (instance->core->platform(instance->core)) {
++#ifdef M_CORE_GBA
++	case mPLATFORM_GBA: {
++		const struct GBA* gba = instance->core->board;
++		if (gba->memory.savedata.type == GBA_SAVEDATA_AUTODETECT) {
++			return GBA_SIZE_FLASH1M;
++		}
++		return GBASavedataSize(&gba->memory.savedata);
++	}
++#endif
++#ifdef M_CORE_GB
++	case mPLATFORM_GB:
++		return ((const struct GB*) instance->core->board)->sramSize;
++#endif
++	default:
++		return 0;
++	}
++}
++
++static size_t _rtcSize(const struct MultiInstance* instance) {
++#ifdef M_CORE_GB
++	if (instance->core && instance->core->platform(instance->core) == mPLATFORM_GB) {
++		const struct GB* gb = instance->core->board;
++		if (gb->memory.mbcType == GB_MBC3_RTC) {
++			return sizeof(struct GBMBCRTCSaveBuffer);
++		}
++	}
++#else
++	UNUSED(instance);
++#endif
++	return 0;
++}
++
++static size_t _ownedSaveSize(const struct MultiInstance* instance) {
++	size_t size = _saveRamSize(instance) + _rtcSize(instance);
++	return size < SAVE_BUFFER_SIZE ? size : SAVE_BUFFER_SIZE;
++}
++
++static bool _writeOwnedSave(struct MultiInstance* instance) {
++	if (!instance->savePath[0]) {
++		return true;
++	}
++	size_t size = _ownedSaveSize(instance);
++	if (!size) {
++		return true;
++	}
++	struct VFile* save = VFileOpen(instance->savePath, O_WRONLY | O_CREAT | O_TRUNC);
++	if (!save) {
++		_frontendLog(RETRO_LOG_ERROR, "could not create %s", instance->savePath);
++		return false;
++	}
++	bool success = save->write(save, instance->saveData, size) == (ssize_t) size;
++	save->close(save);
++	if (!success) {
++		_frontendLog(RETRO_LOG_ERROR, "could not write %s", instance->savePath);
++	}
++	return success;
++}
++
++static void _loadBios(struct MultiInstance* instance) {
++#ifdef ENABLE_VFS
++	struct mCore* core = instance->core;
++	if (!core->opts.useBios) {
++		return;
++	}
++	const char* systemDir = NULL;
++	const char* biosName = NULL;
++	environCallback(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &systemDir);
++	if (!systemDir || !systemDir[0]) {
++		return;
++	}
++
++#ifdef M_CORE_GBA
++	if (core->platform(core) == mPLATFORM_GBA) {
++		biosName = "gba_bios.bin";
++	}
++#endif
++#ifdef M_CORE_GB
++	if (core->platform(core) == mPLATFORM_GB) {
++		struct GB* gb = core->board;
++		const char* modelName = mCoreConfigGetValue(&core->config, "gb.model");
++		if (modelName) {
++			gb->model = GBNameToModel(modelName);
++		} else {
++			GBDetectModel(gb);
++		}
++		switch (gb->model) {
++		case GB_MODEL_AGB:
++		case GB_MODEL_CGB:
++		case GB_MODEL_SCGB:
++			biosName = "gbc_bios.bin";
++			break;
++		case GB_MODEL_SGB:
++			biosName = "sgb_bios.bin";
++			break;
++		case GB_MODEL_DMG:
++		default:
++			biosName = "gb_bios.bin";
++			break;
++		}
++	}
++#endif
++
++	if (biosName) {
++		char path[PATH_MAX];
++		snprintf(path, sizeof(path), "%s%s%s", systemDir, PATH_SEP, biosName);
++		struct VFile* bios = VFileOpen(path, O_RDONLY);
++		if (bios) {
++			core->loadBIOS(core, bios, 0);
++		}
++	}
++#else
++	UNUSED(instance);
++#endif
++}
++
++static bool _loadInstance(struct MultiInstance* instance, const struct retro_game_info* game, unsigned player) {
++	memset(instance, 0, sizeof(*instance));
++	struct VFile* rom = NULL;
++	if (game->path) {
++		strncpy(instance->contentPath, game->path, sizeof(instance->contentPath) - 1);
++	}
++
++	if (game->data && game->size) {
++		instance->romData = anonymousMemoryMap(game->size);
++		if (!instance->romData) {
++			return false;
++		}
++		instance->romSize = game->size;
++		memcpy(instance->romData, game->data, game->size);
++		rom = VFileFromMemory(instance->romData, game->size);
++#ifdef ENABLE_VFS
++	} else if (game->path) {
++		rom = VFileOpen(game->path, O_RDONLY);
++#endif
++	}
++	if (!rom) {
++		return false;
++	}
++
++	instance->core = mCoreFindVF(rom);
++	if (!instance->core) {
++		rom->close(rom);
++		return false;
++	}
++	mCoreInitConfig(instance->core, NULL);
++	if (!instance->core->init(instance->core)) {
++		rom->close(rom);
++		return false;
++	}
++	instance->coreInitialized = true;
++	_configureCore(instance->core);
++
++	instance->video = malloc(VIDEO_BUFFER_PIXELS * sizeof(*instance->video));
++	instance->saveData = anonymousMemoryMap(SAVE_BUFFER_SIZE);
++	instance->audioCapacity = 2048;
++	instance->audio = malloc(instance->audioCapacity * 2 * sizeof(*instance->audio));
++	if (!instance->video || !instance->saveData || !instance->audio) {
++		return false;
++	}
++	memset(instance->video, 0, VIDEO_BUFFER_PIXELS * sizeof(*instance->video));
++	memset(instance->saveData, 0xFF, SAVE_BUFFER_SIZE);
++	instance->core->setVideoBuffer(instance->core, instance->video, VIDEO_WIDTH_MAX);
++	instance->core->setAudioBufferSize(instance->core, 2048);
++
++	if (!instance->core->loadROM(instance->core, rom)) {
++		_frontendLog(RETRO_LOG_ERROR, "player %u ROM failed to load", player + 1);
++		return false;
++	}
++	_loadBios(instance);
++	instance->core->reset(instance->core);
++
++	_buildSavePath(instance, player);
++	_readOwnedSave(instance);
++
++	memset(&instance->thread, 0, sizeof(instance->thread));
++	instance->thread.core = instance->core;
++	instance->thread.logger.logger = &logger;
++	return true;
++}
++
++static void _destroyInstance(struct MultiInstance* instance) {
++	if (instance->coreInitialized && instance->core) {
++		mCoreConfigDeinit(&instance->core->config);
++		instance->core->deinit(instance->core);
++	}
++	free(instance->video);
++	free(instance->audio);
++	if (instance->saveData) {
++		mappedMemoryFree(instance->saveData, SAVE_BUFFER_SIZE);
++	}
++	if (instance->romData) {
++		mappedMemoryFree(instance->romData, instance->romSize);
++	}
++	memset(instance, 0, sizeof(*instance));
++}
++
++#ifdef M_CORE_GBA
++static int _gbaRequestedId(struct mLockstepUser* user) {
++	struct MultiGBAUser* multiUser = (struct MultiGBAUser*) user;
++	return multiUser->preferredId;
++}
++
++static void _gbaSleep(struct mLockstepUser* user) {
++	struct MultiGBAUser* multiUser = (struct MultiGBAUser*) user;
++	struct mCoreThread* thread = multiUser->threaded.thread;
++	if (thread && thread->impl) {
++		mCoreThreadWaitFromThread(thread);
++	}
++}
++
++static void _gbaWake(struct mLockstepUser* user) {
++	struct MultiGBAUser* multiUser = (struct MultiGBAUser*) user;
++	struct mCoreThread* thread = multiUser->threaded.thread;
++	if (thread && thread->impl) {
++		mCoreThreadStopWaiting(thread);
++	}
++}
++#endif
++
++#ifdef M_CORE_GB
++static struct GBLinkContext* _gbContext(struct mLockstep* lockstep) {
++	return lockstep->context;
++}
++
++static void _gbLock(struct mLockstep* lockstep) {
++	MutexLock(&_gbContext(lockstep)->mutex);
++}
++
++static void _gbUnlock(struct mLockstep* lockstep) {
++	MutexUnlock(&_gbContext(lockstep)->mutex);
++}
++
++static bool _gbSignal(struct mLockstep* lockstep, unsigned mask) {
++	struct GBLinkContext* context = _gbContext(lockstep);
++	bool woke = false;
++	context->waitMask &= ~mask;
++	if (!context->waitMask && context->awake[0] < 1 && context->players[0]->thread.impl) {
++		mCoreThreadStopWaiting(&context->players[0]->thread);
++		context->awake[0] = 1;
++		woke = true;
++	}
++	return woke;
++}
++
++static bool _gbWait(struct mLockstep* lockstep, unsigned mask) {
++	struct GBLinkContext* context = _gbContext(lockstep);
++	bool slept = false;
++	context->waitMask |= mask;
++	if (context->awake[0] > 0 && context->players[0]->thread.impl) {
++		mCoreThreadWaitFromThread(&context->players[0]->thread);
++		context->awake[0] = 0;
++		slept = true;
++	}
++	return slept;
++}
++
++static void _gbAddCycles(struct mLockstep* lockstep, int id, int32_t cycles) {
++	struct GBLinkContext* context = _gbContext(lockstep);
++	if (cycles < 0 || id < 0 || id > 1) {
++		return;
++	}
++	if (!id) {
++		id = 1;
++		if (context->players[id]->thread.impl) {
++			mCoreSyncSetVideoSync(&context->players[id]->thread.impl->sync, false);
++		}
++		context->cyclesPosted[id] += cycles;
++		if (context->awake[id] < 1) {
++			context->players[id]->gbLink.nextEvent += context->cyclesPosted[id];
++		}
++		if (context->players[id]->thread.impl) {
++			mCoreThreadStopWaiting(&context->players[id]->thread);
++		}
++		context->awake[id] = 1;
++	} else {
++		if (context->players[id]->thread.impl) {
++			mCoreSyncSetVideoSync(&context->players[id]->thread.impl->sync, true);
++		}
++		context->cyclesPosted[id] += cycles;
++	}
++}
++
++static int32_t _gbUseCycles(struct mLockstep* lockstep, int id, int32_t cycles) {
++	struct GBLinkContext* context = _gbContext(lockstep);
++	if (id < 0 || id > 1) {
++		return 0;
++	}
++	context->cyclesPosted[id] -= cycles;
++	if (context->cyclesPosted[id] <= 0 && context->players[id]->thread.impl) {
++		mCoreThreadWaitFromThread(&context->players[id]->thread);
++		context->awake[id] = 0;
++	}
++	return context->cyclesPosted[id];
++}
++
++static int32_t _gbUnusedCycles(struct mLockstep* lockstep, int id) {
++	struct GBLinkContext* context = _gbContext(lockstep);
++	return id >= 0 && id <= 1 ? context->cyclesPosted[id] : 0;
++}
++
++static void _gbUnload(struct mLockstep* lockstep, int id) {
++	struct GBLinkContext* context = _gbContext(lockstep);
++	if (id == 1 && context->players[1]) {
++		context->cyclesPosted[1] = 0;
++		if (context->players[1]->thread.impl) {
++			mCoreSyncSetVideoSync(&context->players[1]->thread.impl->sync, true);
++		}
++		if (context->players[0]) {
++			context->waitMask &= ~(1U << 1);
++			if (!context->waitMask && context->awake[0] < 1 && context->players[0]->thread.impl) {
++				mCoreThreadStopWaiting(&context->players[0]->thread);
++				context->awake[0] = 1;
++			}
++		}
++	} else if (id == 0 && context->players[1]) {
++		context->cyclesPosted[1] += context->lockstep.players[0] ? context->lockstep.players[0]->eventDiff : 0;
++		if (context->awake[1] < 1 && context->players[1]->thread.impl) {
++			context->players[1]->gbLink.nextEvent += context->cyclesPosted[1];
++			mCoreThreadStopWaiting(&context->players[1]->thread);
++			context->awake[1] = 1;
++		}
++	}
++}
++#endif
++
++static bool _setupLink(void) {
++	linkActive = false;
++	if (!linkRequested || instanceCount < 2) {
++		return true;
++	}
++
++	enum mPlatform platform = instances[0].core->platform(instances[0].core);
++	unsigned i;
++	for (i = 1; i < instanceCount; ++i) {
++		if (instances[i].core->platform(instances[i].core) != platform) {
++			_frontendLog(RETRO_LOG_WARN, "link disabled because players use different hardware families");
++			return true;
++		}
++	}
++
++	switch (platform) {
++#ifdef M_CORE_GBA
++	case mPLATFORM_GBA:
++		GBASIOLockstepCoordinatorInit(&gbaCoordinator);
++		gbaCoordinatorInitialized = true;
++		for (i = 0; i < instanceCount; ++i) {
++			struct MultiInstance* instance = &instances[i];
++			mLockstepThreadUserInit(&instance->gbaUser.threaded, &instance->thread);
++			instance->gbaUser.preferredId = (int) i;
++			instance->gbaUser.threaded.d.sleep = _gbaSleep;
++			instance->gbaUser.threaded.d.wake = _gbaWake;
++			instance->gbaUser.threaded.d.requestedId = _gbaRequestedId;
++			GBASIOLockstepDriverCreate(&instance->gbaLink, &instance->gbaUser.threaded.d);
++			GBASIOLockstepCoordinatorAttach(&gbaCoordinator, &instance->gbaLink);
++			instance->core->setPeripheral(instance->core, mPERIPH_GBA_LINK_PORT, &instance->gbaLink.d);
++			instance->linkAttached = true;
++		}
++		linkActive = true;
++		_frontendLog(RETRO_LOG_INFO, "linked %u Game Boy Advance instances", instanceCount);
++		return true;
++#endif
++#ifdef M_CORE_GB
++	case mPLATFORM_GB: {
++		struct GBLinkContext* context = &gbLinkContext;
++		memset(context, 0, sizeof(*context));
++		mLockstepInit(&context->lockstep.d);
++		GBSIOLockstepInit(&context->lockstep);
++		MutexInit(&context->mutex);
++		context->initialized = true;
++		context->lockstep.d.context = context;
++		context->lockstep.d.lock = _gbLock;
++		context->lockstep.d.unlock = _gbUnlock;
++		context->lockstep.d.signal = _gbSignal;
++		context->lockstep.d.wait = _gbWait;
++		context->lockstep.d.addCycles = _gbAddCycles;
++		context->lockstep.d.useCycles = _gbUseCycles;
++		context->lockstep.d.unusedCycles = _gbUnusedCycles;
++		context->lockstep.d.unload = _gbUnload;
++		context->awake[0] = 1;
++		context->awake[1] = 1;
++
++		unsigned linked = instanceCount < 2 ? instanceCount : 2;
++		for (i = 0; i < linked; ++i) {
++			struct MultiInstance* instance = &instances[i];
++			context->players[i] = instance;
++			GBSIOLockstepNodeCreate(&instance->gbLink);
++			if (!GBSIOLockstepAttachNode(&context->lockstep, &instance->gbLink)) {
++				return false;
++			}
++			GBSIOSetDriver(&((struct GB*) instance->core->board)->sio, &instance->gbLink.d);
++			instance->linkAttached = true;
++		}
++		linkActive = linked == 2;
++		if (instanceCount > 2) {
++			_frontendLog(RETRO_LOG_WARN, "GB/GBC link cable supports two peers; player 3 remains unlinked");
++		}
++		_frontendLog(RETRO_LOG_INFO, "linked two Game Boy/Game Boy Color instances");
++		return true;
++	}
++#endif
++	default:
++		return true;
++	}
++}
++
++static void _teardownLink(void) {
++	unsigned i;
++#ifdef M_CORE_GBA
++	if (gbaCoordinatorInitialized) {
++		for (i = 0; i < instanceCount; ++i) {
++			if (!instances[i].linkAttached) {
++				continue;
++			}
++			instances[i].core->setPeripheral(instances[i].core, mPERIPH_GBA_LINK_PORT, NULL);
++			GBASIOLockstepCoordinatorDetach(&gbaCoordinator, &instances[i].gbaLink);
++			instances[i].linkAttached = false;
++		}
++		GBASIOLockstepCoordinatorDeinit(&gbaCoordinator);
++		gbaCoordinatorInitialized = false;
++	}
++#endif
++#ifdef M_CORE_GB
++	if (gbLinkContext.initialized) {
++		for (i = 0; i < instanceCount && i < 2; ++i) {
++			if (!instances[i].linkAttached) {
++				continue;
++			}
++			GBSIOSetDriver(&((struct GB*) instances[i].core->board)->sio, NULL);
++			GBSIOLockstepDetachNode(&gbLinkContext.lockstep, &instances[i].gbLink);
++			instances[i].linkAttached = false;
++		}
++		mLockstepDeinit(&gbLinkContext.lockstep.d);
++		MutexDeinit(&gbLinkContext.mutex);
++		memset(&gbLinkContext, 0, sizeof(gbLinkContext));
++	}
++#endif
++	linkActive = false;
++}
++
++static bool _finishDeferredSetup(void) {
++	if (!deferredSetup) {
++		return true;
++	}
++	unsigned i;
++	for (i = 0; i < instanceCount; ++i) {
++		struct VFile* save = VFileFromMemory(instances[i].saveData, SAVE_BUFFER_SIZE);
++		if (!save || !instances[i].core->loadSave(instances[i].core, save)) {
++			if (save) {
++				save->close(save);
++			}
++			_frontendLog(RETRO_LOG_ERROR, "player %u save memory failed to attach", i + 1);
++			return false;
++		}
++	}
++	for (i = 0; i < instanceCount; ++i) {
++		if (!mCoreThreadPrepare(&instances[i].thread)) {
++			_frontendLog(RETRO_LOG_ERROR, "player %u emulation thread failed to prepare", i + 1);
++			return false;
++		}
++		instances[i].threadPrepared = true;
++	}
++	if (!_setupLink()) {
++		_frontendLog(RETRO_LOG_ERROR, "link cable setup failed");
++		return false;
++	}
++	deferredSetup = false;
++	return true;
++}
++
++static bool _startThreads(void) {
++	if (threadsStarted) {
++		return true;
++	}
++	if (!_finishDeferredSetup()) {
++		return false;
++	}
++	unsigned i;
++	for (i = 0; i < instanceCount; ++i) {
++		if (!mCoreThreadLaunch(&instances[i].thread)) {
++			_frontendLog(RETRO_LOG_ERROR, "player %u emulation thread failed to start", i + 1);
++			return false;
++		}
++		instances[i].threadStarted = true;
++	}
++	threadsStarted = true;
++	return true;
++}
++
++static void _stopThreads(void) {
++	unsigned i;
++	for (i = 0; i < instanceCount; ++i) {
++		if (instances[i].threadStarted) {
++			mCoreThreadEnd(&instances[i].thread);
++		}
++	}
++	for (i = 0; i < instanceCount; ++i) {
++		if (instances[i].threadStarted) {
++			mCoreThreadJoin(&instances[i].thread);
++			instances[i].threadStarted = false;
++			instances[i].threadPrepared = false;
++		} else if (instances[i].threadPrepared) {
++			mCoreThreadUnprepare(&instances[i].thread);
++			instances[i].threadPrepared = false;
++		}
++	}
++	threadsStarted = false;
++}
++
++static void _interruptThreads(void) {
++	if (!threadsStarted) {
++		return;
++	}
++	unsigned i;
++	for (i = 0; i < instanceCount; ++i) {
++		mCoreThreadInterrupt(&instances[i].thread);
++	}
++}
++
++static void _continueThreads(void) {
++	if (!threadsStarted) {
++		return;
++	}
++	unsigned i = instanceCount;
++	while (i) {
++		--i;
++		mCoreThreadContinue(&instances[i].thread);
++	}
++}
++
++static void _unloadAll(void) {
++	if (!instanceCount) {
++		return;
++	}
++	_stopThreads();
++	_teardownLink();
++
++	unsigned i;
++	for (i = 1; i < instanceCount; ++i) {
++		_writeOwnedSave(&instances[i]);
++	}
++	for (i = 0; i < instanceCount; ++i) {
++		_destroyInstance(&instances[i]);
++	}
++	instanceCount = 0;
++	deferredSetup = false;
++	linkRequested = false;
++	warnedRestart = false;
++	autosaveCounter = 0;
++	compositeWidth = 0;
++	compositeHeight = 0;
++}
++
++static bool _loadGames(const struct retro_game_info* games, size_t count, bool cloneFirst) {
++	_unloadAll();
++	if (!compositeBuffer || !games || count < 1 || count > MULTI_MAX_INSTANCES) {
++		return false;
++	}
++	instanceCount = (unsigned) count;
++	linkRequested = _requestedLink();
++	audioSource = _requestedAudioSource();
++
++	unsigned i;
++	for (i = 0; i < instanceCount; ++i) {
++		const struct retro_game_info* game = cloneFirst ? &games[0] : &games[i];
++		if (!_loadInstance(&instances[i], game, i)) {
++			_frontendLog(RETRO_LOG_ERROR, "failed to initialize player %u", i + 1);
++			instanceCount = i + 1;
++			_unloadAll();
++			return false;
++		}
++	}
++
++	deferredSetup = true;
++	warnedRestart = false;
++	autosaveCounter = 0;
++	return true;
++}
++
++static uint16_t _readKeys(unsigned port) {
++	uint16_t keys = 0;
++	unsigned i;
++	if (useBitmasks) {
++		int16_t mask = inputCallback(port, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_MASK);
++		for (i = 0; i < sizeof(keymap) / sizeof(*keymap); ++i) {
++			keys |= ((mask >> keymap[i]) & 1) << i;
++		}
++	} else {
++		for (i = 0; i < sizeof(keymap) / sizeof(*keymap); ++i) {
++			keys |= (!!inputCallback(port, RETRO_DEVICE_JOYPAD, 0, keymap[i])) << i;
++		}
++	}
++	return keys;
++}
++
++static void _setInputs(void) {
++	unsigned i;
++	for (i = 0; i < instanceCount; ++i) {
++		instances[i].core->setKeys(instances[i].core, _readKeys(i));
++	}
++}
++
++static void _getCompositeDimensions(unsigned* widthOut, unsigned* heightOut) {
++	unsigned width = 0;
++	unsigned height = 0;
++	unsigned i;
++	for (i = 0; i < instanceCount; ++i) {
++		unsigned instanceWidth = 0;
++		unsigned instanceHeight = 0;
++		instances[i].core->currentVideoSize(instances[i].core, &instanceWidth, &instanceHeight);
++		width += instanceWidth;
++		if (instanceHeight > height) {
++			height = instanceHeight;
++		}
++	}
++	*widthOut = width;
++	*heightOut = height;
++}
++
++static void _updateGeometry(unsigned width, unsigned height) {
++	if (!width || !height || (width == compositeWidth && height == compositeHeight)) {
++		return;
++	}
++	compositeWidth = width;
++	compositeHeight = height;
++	struct retro_game_geometry geometry = {
++		.base_width = width,
++		.base_height = height,
++		.max_width = COMPOSITE_WIDTH_MAX,
++		.max_height = VIDEO_HEIGHT_MAX,
++		.aspect_ratio = (float) width / (float) height,
++	};
++	environCallback(RETRO_ENVIRONMENT_SET_GEOMETRY, &geometry);
++}
++
++static void _composeVideo(void) {
++	unsigned width;
++	unsigned height;
++	_getCompositeDimensions(&width, &height);
++	if (!width || !height || width > COMPOSITE_WIDTH_MAX || height > VIDEO_HEIGHT_MAX) {
++		videoCallback(NULL, 0, 0, 0);
++		return;
++	}
++	_updateGeometry(width, height);
++	memset(compositeBuffer, 0, width * height * sizeof(*compositeBuffer));
++
++	unsigned x = 0;
++	unsigned i;
++	for (i = 0; i < instanceCount; ++i) {
++		unsigned instanceWidth;
++		unsigned instanceHeight;
++		instances[i].core->currentVideoSize(instances[i].core, &instanceWidth, &instanceHeight);
++		unsigned yOffset = (height - instanceHeight) / 2;
++		unsigned y;
++		for (y = 0; y < instanceHeight; ++y) {
++			memcpy(&compositeBuffer[(y + yOffset) * width + x],
++			       &instances[i].video[y * VIDEO_WIDTH_MAX],
++			       instanceWidth * sizeof(*compositeBuffer));
++		}
++		x += instanceWidth;
++	}
++	videoCallback(compositeBuffer, width, height, width * sizeof(*compositeBuffer));
++}
++
++static bool _ensureAudioCapacity(struct MultiInstance* instance, size_t frames) {
++	if (instance->audioCapacity >= frames) {
++		return true;
++	}
++	int16_t* audio = realloc(instance->audio, frames * 2 * sizeof(*audio));
++	if (!audio) {
++		return false;
++	}
++	instance->audio = audio;
++	instance->audioCapacity = frames;
++	return true;
++}
++
++static void _mixAudio(void);
++static void _periodicSave(void);
++static bool _serializeCore(struct MultiInstance*, uint8_t*);
++static bool _unserializeCore(struct MultiInstance*, const uint8_t*);
++
++unsigned retro_api_version(void) {
++	return RETRO_API_VERSION;
++}
++
++void retro_set_environment(retro_environment_t env) {
++	environCallback = env;
++	environCallback(RETRO_ENVIRONMENT_SET_VARIABLES, (void*) coreVariables);
++	environCallback(RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO, (void*) subsystemInfo);
++	environCallback(RETRO_ENVIRONMENT_SET_CONTROLLER_INFO, (void*) controllerInfo);
++}
++
++void retro_set_video_refresh(retro_video_refresh_t video) {
++	videoCallback = video;
++}
++
++void retro_set_audio_sample(retro_audio_sample_t audio) {
++	UNUSED(audio);
++}
++
++void retro_set_audio_sample_batch(retro_audio_sample_batch_t audioBatch) {
++	audioCallback = audioBatch;
++}
++
++void retro_set_input_poll(retro_input_poll_t inputPoll) {
++	inputPollCallback = inputPoll;
++}
++
++void retro_set_input_state(retro_input_state_t input) {
++	inputCallback = input;
++}
++
++void retro_get_system_info(struct retro_system_info* info) {
++	memset(info, 0, sizeof(*info));
++	snprintf(libraryVersion, sizeof(libraryVersion), "%s-multi.%s", projectVersion, MULTI_FRONTEND_VERSION);
++	info->library_name = "mGBA Multi";
++	info->library_version = libraryVersion;
++#if defined(M_CORE_GBA) && defined(M_CORE_GB)
++	info->valid_extensions = "gba|gb|gbc|sgb";
++#elif defined(M_CORE_GB)
++	info->valid_extensions = "gb|gbc|sgb";
++#else
++	info->valid_extensions = "gba";
++#endif
++	info->need_fullpath = false;
++	info->block_extract = false;
++}
++
++void retro_get_system_av_info(struct retro_system_av_info* info) {
++	memset(info, 0, sizeof(*info));
++	unsigned width = 240 * (instanceCount ? instanceCount : _requestedInstanceCount());
++	unsigned height = 160;
++	if (instanceCount) {
++		_getCompositeDimensions(&width, &height);
++	}
++	info->geometry.base_width = width;
++	info->geometry.base_height = height;
++	info->geometry.max_width = COMPOSITE_WIDTH_MAX;
++	info->geometry.max_height = VIDEO_HEIGHT_MAX;
++	info->geometry.aspect_ratio = height ? (float) width / (float) height : 0.0f;
++	if (instanceCount && instances[0].core) {
++		struct mCore* core = instances[0].core;
++		info->timing.fps = core->frequency(core) / (double) core->frameCycles(core);
++		info->timing.sample_rate = core->audioSampleRate(core);
++	} else {
++		info->timing.fps = 16777216.0 / 280896.0;
++		info->timing.sample_rate = 32768.0;
++	}
++}
++
++void retro_init(void) {
++	enum retro_pixel_format format = RETRO_PIXEL_FORMAT_RGB565;
++	environCallback(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &format);
++	useBitmasks = environCallback(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL);
++
++	struct retro_input_descriptor descriptors[MULTI_MAX_INSTANCES * 10 + 1];
++	memset(descriptors, 0, sizeof(descriptors));
++	static const char* names[] = { "A", "B", "Select", "Start", "Right", "Left", "Up", "Down", "R", "L" };
++	unsigned port;
++	unsigned key;
++	for (port = 0; port < MULTI_MAX_INSTANCES; ++port) {
++		for (key = 0; key < sizeof(keymap) / sizeof(*keymap); ++key) {
++			struct retro_input_descriptor* descriptor = &descriptors[port * 10 + key];
++			descriptor->port = port;
++			descriptor->device = RETRO_DEVICE_JOYPAD;
++			descriptor->id = keymap[key];
++			descriptor->description = names[key];
++		}
++	}
++	environCallback(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, descriptors);
++
++	struct retro_log_callback log;
++	if (environCallback(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log)) {
++		logCallback = log.log;
++	} else {
++		logCallback = NULL;
++	}
++	logger.log = _retroLog;
++	mLogSetDefaultLogger(&logger);
++	compositeBuffer = malloc(COMPOSITE_BUFFER_PIXELS * sizeof(*compositeBuffer));
++	compositeWidth = 0;
++	compositeHeight = 0;
++}
++
++void retro_deinit(void) {
++	_unloadAll();
++	free(compositeBuffer);
++	compositeBuffer = NULL;
++	free(mixedAudio);
++	mixedAudio = NULL;
++	mixedAudioCapacity = 0;
++	useBitmasks = false;
++}
++
++bool retro_load_game(const struct retro_game_info* game) {
++	return _loadGames(game, _requestedInstanceCount(), true);
++}
++
++bool retro_load_game_special(unsigned gameType, const struct retro_game_info* games, size_t count) {
++	if ((gameType == MULTI_SUBSYSTEM_2 && count == 2) || (gameType == MULTI_SUBSYSTEM_3 && count == 3)) {
++		return _loadGames(games, count, false);
++	}
++	return false;
++}
++
++void retro_unload_game(void) {
++	_unloadAll();
++}
++
++void retro_run(void) {
++	if (!instanceCount || !inputPollCallback || !inputCallback || !videoCallback) {
++		return;
++	}
++	inputPollCallback();
++	if (!threadsStarted) {
++		_setInputs();
++		if (!_startThreads()) {
++			videoCallback(NULL, 0, 0, 0);
++			return;
++		}
++	}
++
++	bool updated = false;
++	unsigned i;
++	for (i = 0; i < instanceCount; ++i) {
++		mCoreSyncWaitFrameStart(&instances[i].thread.impl->sync);
++	}
++	_setInputs();
++	if (environCallback(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated) {
++		_applyRuntimeSettings();
++	}
++	_composeVideo();
++	_mixAudio();
++	for (i = 0; i < instanceCount; ++i) {
++		mCoreSyncWaitFrameEnd(&instances[i].thread.impl->sync);
++	}
++	_periodicSave();
++}
++
++void retro_reset(void) {
++	if (!instanceCount) {
++		return;
++	}
++	if (!threadsStarted) {
++		unsigned i;
++		for (i = 0; i < instanceCount; ++i) {
++			instances[i].core->reset(instances[i].core);
++		}
++		return;
++	}
++	unsigned i;
++	for (i = 0; i < instanceCount; ++i) {
++		mCoreSyncSetVideoSync(&instances[i].thread.impl->sync, false);
++	}
++	for (i = 0; i < instanceCount; ++i) {
++		mCoreThreadReset(&instances[i].thread);
++	}
++	for (i = 0; i < instanceCount; ++i) {
++		mCoreSyncSetVideoSync(&instances[i].thread.impl->sync, true);
++	}
++}
++
++size_t retro_serialize_size(void) {
++	return instanceCount ? STATE_HEADER_SIZE + instanceCount * STATE_SLOT_SIZE : 0;
++}
++
++bool retro_serialize(void* data, size_t size) {
++	if (!instanceCount || !data || size < retro_serialize_size() || !_startThreads()) {
++		return false;
++	}
++	_interruptThreads();
++	uint8_t* output = data;
++	memset(output, 0, retro_serialize_size());
++	memcpy(output, "MGBAMUL1", 8);
++	STORE_32LE(MULTI_STATE_VERSION, 8, output);
++	STORE_32LE(instanceCount, 12, output);
++	STORE_32LE(linkActive ? 1 : 0, 16, output);
++	STORE_32LE(STATE_SLOT_SIZE, 20, output);
++	bool success = true;
++	unsigned i;
++	for (i = 0; i < instanceCount; ++i) {
++		if (!_serializeCore(&instances[i], output + STATE_HEADER_SIZE + i * STATE_SLOT_SIZE)) {
++			success = false;
++			break;
++		}
++	}
++	_continueThreads();
++	return success;
++}
++
++bool retro_unserialize(const void* data, size_t size) {
++	if (!instanceCount || !data || size < STATE_HEADER_SIZE || !_startThreads()) {
++		return false;
++	}
++	const uint8_t* input = data;
++	uint32_t version;
++	uint32_t count;
++	uint32_t slotSize;
++	LOAD_32LE(version, 8, input);
++	LOAD_32LE(count, 12, input);
++	LOAD_32LE(slotSize, 20, input);
++	if (memcmp(input, "MGBAMUL1", 8) != 0 || version != MULTI_STATE_VERSION || count != instanceCount || slotSize != STATE_SLOT_SIZE ||
++	    size < STATE_HEADER_SIZE + instanceCount * STATE_SLOT_SIZE) {
++		return false;
++	}
++	_interruptThreads();
++	bool success = true;
++	unsigned i;
++	for (i = 0; i < instanceCount; ++i) {
++		if (!_unserializeCore(&instances[i], input + STATE_HEADER_SIZE + i * STATE_SLOT_SIZE)) {
++			success = false;
++			break;
++		}
++	}
++	_continueThreads();
++	return success;
++}
++
++void retro_cheat_reset(void) {
++	unsigned i;
++	for (i = 0; i < instanceCount; ++i) {
++		struct mCheatDevice* device = instances[i].core->cheatDevice(instances[i].core);
++		if (device) {
++			mCheatDeviceClear(device);
++		}
++	}
++}
++
++static void _setCheat(struct mCore* core, const char* code) {
++	struct mCheatDevice* device = core->cheatDevice(core);
++	if (!device || !code) {
++		return;
++	}
++	struct mCheatSet* cheatSet;
++	if (mCheatSetsSize(&device->cheats)) {
++		cheatSet = *mCheatSetsGetPointer(&device->cheats, 0);
++	} else {
++		cheatSet = device->createSet(device, NULL);
++		mCheatAddSet(device, cheatSet);
++	}
++	/* mGBA's parsers accept the common libretro separators after '+' is
++	 * normalized to whitespace. */
++	char* normalized = strdup(code);
++	if (normalized) {
++		char* cursor;
++		for (cursor = normalized; *cursor; ++cursor) {
++			if (*cursor == '+') {
++				*cursor = ' ';
++			}
++		}
++		mCheatAddLine(cheatSet, normalized, 0);
++		free(normalized);
++	}
++	if (cheatSet->refresh) {
++		cheatSet->refresh(cheatSet, device);
++	}
++}
++
++void retro_cheat_set(unsigned index, bool enabled, const char* code) {
++	UNUSED(index);
++	if (!enabled) {
++		return;
++	}
++	if (threadsStarted) {
++		_interruptThreads();
++	}
++	unsigned i;
++	for (i = 0; i < instanceCount; ++i) {
++		_setCheat(instances[i].core, code);
++	}
++	if (threadsStarted) {
++		_continueThreads();
++	}
++}
++
++unsigned retro_get_region(void) {
++	return RETRO_REGION_NTSC;
++}
++
++void retro_set_controller_port_device(unsigned port, unsigned device) {
++	UNUSED(port);
++	UNUSED(device);
++}
++
++void* retro_get_memory_data(unsigned id) {
++	if (!instanceCount || !instances[0].core) {
++		return NULL;
++	}
++	if (id == RETRO_MEMORY_SAVE_RAM) {
++		return instances[0].saveData;
++	}
++	if (id == RETRO_MEMORY_RTC && _rtcSize(&instances[0])) {
++		return &instances[0].saveData[_saveRamSize(&instances[0])];
++	}
++	return NULL;
++}
++
++size_t retro_get_memory_size(unsigned id) {
++	if (!instanceCount || !instances[0].core) {
++		return 0;
++	}
++	if (id == RETRO_MEMORY_SAVE_RAM) {
++		return _saveRamSize(&instances[0]);
++	}
++	if (id == RETRO_MEMORY_RTC) {
++		return _rtcSize(&instances[0]);
++	}
++	return 0;
++}
++
++static void _mixAudio(void) {
++	if (!audioCallback || !instanceCount) {
++		return;
++	}
++
++	size_t frames = SIZE_MAX;
++	unsigned i;
++	for (i = 0; i < instanceCount; ++i) {
++		mCoreSyncLockAudio(&instances[i].thread.impl->sync);
++		size_t available = mAudioBufferAvailable(instances[i].core->getAudioBuffer(instances[i].core));
++		if (available < frames) {
++			frames = available;
++		}
++	}
++
++	if (frames == SIZE_MAX || !frames) {
++		for (i = 0; i < instanceCount; ++i) {
++			mCoreSyncConsumeAudio(&instances[i].thread.impl->sync);
++		}
++		return;
++	}
++
++	bool allocationFailed = false;
++	for (i = 0; i < instanceCount; ++i) {
++		if (!_ensureAudioCapacity(&instances[i], frames)) {
++			allocationFailed = true;
++			break;
++		}
++	}
++	if (mixedAudioCapacity < frames) {
++		int16_t* audio = realloc(mixedAudio, frames * 2 * sizeof(*audio));
++		if (!audio) {
++			allocationFailed = true;
++		} else {
++			mixedAudio = audio;
++			mixedAudioCapacity = frames;
++		}
++	}
++	if (allocationFailed) {
++		for (i = 0; i < instanceCount; ++i) {
++			mCoreSyncConsumeAudio(&instances[i].thread.impl->sync);
++		}
++		return;
++	}
++
++	for (i = 0; i < instanceCount; ++i) {
++		mAudioBufferRead(instances[i].core->getAudioBuffer(instances[i].core), instances[i].audio, frames);
++		mCoreSyncConsumeAudio(&instances[i].thread.impl->sync);
++	}
++
++	if (audioSource > 0 && audioSource <= instanceCount) {
++		memcpy(mixedAudio, instances[audioSource - 1].audio, frames * 2 * sizeof(*mixedAudio));
++	} else {
++		size_t sample;
++		for (sample = 0; sample < frames * 2; ++sample) {
++			int32_t value = 0;
++			for (i = 0; i < instanceCount; ++i) {
++				value += instances[i].audio[sample];
++			}
++			mixedAudio[sample] = (int16_t) (value / (int32_t) instanceCount);
++		}
++	}
++	audioCallback(mixedAudio, frames);
++}
++
++static void _periodicSave(void) {
++	if (++autosaveCounter < AUTOSAVE_INTERVAL_FRAMES) {
++		return;
++	}
++	autosaveCounter = 0;
++	_interruptThreads();
++	unsigned i;
++	for (i = 1; i < instanceCount; ++i) {
++		_writeOwnedSave(&instances[i]);
++	}
++	_continueThreads();
++}
++
++static bool _serializeCore(struct MultiInstance* instance, uint8_t* slot) {
++	struct VFile* state = VFileMemChunk(NULL, 0);
++	if (!state) {
++		return false;
++	}
++	bool success = mCoreSaveStateNamed(instance->core, state, SAVESTATE_SAVEDATA | SAVESTATE_RTC);
++	ssize_t stateSize = state->size(state);
++	if (!success || stateSize < 0 || (uint64_t) stateSize > STATE_SLOT_PAYLOAD) {
++		state->close(state);
++		return false;
++	}
++	memset(slot, 0, STATE_SLOT_SIZE);
++	STORE_64LE((uint64_t) stateSize, 0, slot);
++	state->seek(state, 0, SEEK_SET);
++	success = state->read(state, slot + sizeof(uint64_t), stateSize) == stateSize;
++	state->close(state);
++	return success;
++}
++
++static bool _unserializeCore(struct MultiInstance* instance, const uint8_t* slot) {
++	uint64_t stateSize;
++	LOAD_64LE(stateSize, 0, slot);
++	if (!stateSize || stateSize > STATE_SLOT_PAYLOAD) {
++		return false;
++	}
++	struct VFile* state = VFileFromConstMemory(slot + sizeof(uint64_t), (size_t) stateSize);
++	if (!state) {
++		return false;
++	}
++	bool success = mCoreLoadStateNamed(instance->core, state, SAVESTATE_RTC);
++	state->close(state);
++	return success;
++}
+diff --git a/src/platform/libretro/mgba_multi_libretro.info b/src/platform/libretro/mgba_multi_libretro.info
+new file mode 100644
+index 0000000000000000000000000000000000000000..1447ed0e6525803882b4500ed563019692103bd4
+--- /dev/null
++++ b/src/platform/libretro/mgba_multi_libretro.info
+@@ -0,0 +1,13 @@
++display_name = "Nintendo - Game Boy Advance / Color (mGBA Multi)"
++authors = "endrift|mGBA contributors"
++supported_extensions = "gba|gb|gbc|sgb"
++corename = "mGBA Multi"
++manufacturer = "Nintendo"
++categories = "Emulator"
++systemname = "Nintendo Game Boy Advance / Color"
++systemid = "game_boy_advance|game_boy_color|game_boy"
++database = "Nintendo - Game Boy Advance|Nintendo - Game Boy Color|Nintendo - Game Boy"
++license = "MPLv2"
++permissions = ""
++display_version = "0.11-dev-multi.0.1.0"
++supports_no_game = "false"

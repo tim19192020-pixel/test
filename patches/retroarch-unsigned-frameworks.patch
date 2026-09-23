@@ -1,0 +1,17 @@
+diff --git a/pkg/apple/make-frameworks.sh b/pkg/apple/make-frameworks.sh
+index e3d4a4ca42600885c51b0df8126f91acfe561434..5d668a5395f88cbd3dbc34f15772e1a5ce563b2d 100755
+--- a/pkg/apple/make-frameworks.sh
++++ b/pkg/apple/make-frameworks.sh
+@@ -7,6 +7,12 @@ if [ "${CODE_SIGN_IDENTITY_FOR_ITEMS}" = "" ] ; then
+     CODE_SIGN_IDENTITY_FOR_ITEMS="${CODE_SIGN_IDENTITY}"
+ fi
+ 
++# An unsigned Xcode build has no expanded identity. Ad-hoc sign generated
++# frameworks so the app bundle can be packaged and re-signed by the installer.
++if [ "${CODE_SIGN_IDENTITY_FOR_ITEMS}" = "" ] ; then
++    CODE_SIGN_IDENTITY_FOR_ITEMS="-"
++fi
++
+ echo "Identity:"
+ echo "${CODE_SIGN_IDENTITY_FOR_ITEMS}"
+ 
