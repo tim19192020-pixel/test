@@ -92,10 +92,10 @@ index 834e9fd9ceb94a972941fb7b12494270702601e8..c4b63b8b1da29600e32662063aed79ae
  	message(STATUS "	Shared: ${BUILD_SHARED}")
 diff --git a/README_MULTI_LIBRETRO.md b/README_MULTI_LIBRETRO.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..7472c991f442ea392ecb51a5f78091cb69a0ff97
+index 0000000000000000000000000000000000000000..7bf044c743d3a74f58906eb2e735ca65db0b3852
 --- /dev/null
 +++ b/README_MULTI_LIBRETRO.md
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,154 @@
 +# mGBA Multi libretro core
 +
 +This fork adds a separate `mGBA Multi` libretro target. It keeps the normal
@@ -106,7 +106,8 @@ index 0000000000000000000000000000000000000000..7472c991f442ea392ecb51a5f78091cb
 +
 +- One to three local instances, with two as the default.
 +- Independent controllers on RetroArch ports 1, 2, and 3.
-+- Independent 1x, 2x, 3x, or 4x speed controls for every unlinked instance.
++- Independent speed targets from 1x to 3x in 0.25x steps for every unlinked
++  instance, with an R2 toggle on each player's controller.
 +- One mixed audio stream, or audio from a selected player.
 +- Separate battery saves for every instance.
 +- One combined RetroArch save state containing every running instance.
@@ -176,10 +177,15 @@ index 0000000000000000000000000000000000000000..7472c991f442ea392ecb51a5f78091cb
 +2. Open **Quick Menu > Core Options**.
 +3. Set **Instances** to 1, 2, or 3 and choose whether **Local link cable** is
 +   enabled.
-+4. Set **Player 1 speed**, **Player 2 speed**, and **Player 3 speed** as needed.
++4. Set **Player 1 speed target**, **Player 2 speed target**, and **Player 3
++   speed target** as needed.
 +5. Restart or reload the content after changing the instance count or link
 +   setting. Speed changes apply immediately.
 +6. Assign controllers to RetroArch ports 1 through 3.
++
++Press **R2** on a player's controller to toggle only that player between 1x
++and the configured target. R2 is edge-triggered, so holding it does not cycle
++or repeatedly toggle the speed. Set a target above 1x before using the toggle.
 +
 +Loading one ROM through **Load Content** runs that ROM in every instance. To
 +use different games or versions, use RetroArch's **Load Subsystem** flow and
@@ -202,9 +208,15 @@ index 0000000000000000000000000000000000000000..7472c991f442ea392ecb51a5f78091cb
 +screen or changes its aspect ratio. With two instances, Player 1 stays on the
 +left and Player 2 stays on the right.
 +
-+Individual speed multipliers advance only the selected instance. Audio from a
-+sped-up instance is resampled into the normal frontend time window. Link cable
-+sessions force all players to 1x because linked systems must share a timeline.
++Individual speed targets advance only the selected instance. Targets are
++available in 0.25x steps from 1x through 3x, and each controller's R2 button
++toggles its own target on or off. Audio from a sped-up instance is resampled
++into the normal frontend time window. Link cable sessions force all players to
++1x because linked systems must share a timeline.
++
++For unlinked play, extra frames are scheduled round-robin so one sped-up player
++does not stall the others. The compositor clears its widescreen padding only
++when the layout changes, and the common 1x audio path avoids resampling work.
 +
 +## Save files
 +
@@ -234,7 +246,8 @@ index 0000000000000000000000000000000000000000..7472c991f442ea392ecb51a5f78091cb
 +  multiplayer, load ROMs that implement mutually compatible link protocols.
 +- The instance count and link topology are fixed for a content session and
 +  take effect after content restart.
-+- Individual speed controls are held at 1x while link emulation is active.
++- Individual speed controls and R2 toggles are held at 1x while link emulation
++  is active.
 +
 +This fork retains mGBA's Mozilla Public License 2.0 licensing.
 diff --git a/include/mgba/core/thread.h b/include/mgba/core/thread.h
@@ -370,10 +383,10 @@ index 8450f0d25d4b8e933b56370d01ba050f0a7f1405..60e35e1e82364a82fbd9b67e11b84d29
  				core->videoLogger = &gbacore->threadProxy.d;
 diff --git a/src/platform/libretro/libretro_multi.c b/src/platform/libretro/libretro_multi.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b4dae74fa
+index 0000000000000000000000000000000000000000..fcf96c7f7e553c584365fd6c585e44439d208f77
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi.c
-@@ -0,0 +1,1774 @@
+@@ -0,0 +1,1929 @@
 +/* Copyright (c) 2013-2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -436,7 +449,9 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +#endif
 +
 +#define MULTI_MAX_INSTANCES 3
-+#define MULTI_MAX_SPEED 4
++#define INPUT_DESCRIPTORS_PER_PORT 11
++#define MULTI_SPEED_ONE 4
++#define MULTI_SPEED_MAX 12
 +#define VIDEO_WIDTH_MAX 256
 +#define VIDEO_HEIGHT_MAX 224
 +#define COMPOSITE_GRID_HEIGHT_MAX (VIDEO_HEIGHT_MAX * 2)
@@ -451,7 +466,7 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +#define STATE_SLOT_SIZE (1024 * 1024)
 +#define STATE_SLOT_PAYLOAD (STATE_SLOT_SIZE - sizeof(uint64_t))
 +#define MULTI_STATE_VERSION 1
-+#define MULTI_FRONTEND_VERSION "0.2.0"
++#define MULTI_FRONTEND_VERSION "0.3.0"
 +#define MULTI_SUBSYSTEM_2 0x4D474202U
 +#define MULTI_SUBSYSTEM_3 0x4D474203U
 +
@@ -533,13 +548,22 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +static bool warnedLinkSpeed;
 +static unsigned autosaveCounter;
 +static unsigned audioSource;
-+static unsigned speedMultiplier[MULTI_MAX_INSTANCES] = { 1, 1, 1 };
++static unsigned speedQuarters[MULTI_MAX_INSTANCES] = {
++	MULTI_SPEED_ONE,
++	MULTI_SPEED_ONE,
++	MULTI_SPEED_ONE,
++};
++static unsigned speedPhase[MULTI_MAX_INSTANCES];
++static bool speedEnabled[MULTI_MAX_INSTANCES];
++static bool speedTogglePressed[MULTI_MAX_INSTANCES];
 +
 +static mColor* compositeBuffer;
 +static int16_t* mixedAudio;
 +static size_t mixedAudioCapacity;
 +static unsigned compositeWidth;
 +static unsigned compositeHeight;
++static struct MultiLayout previousLayout;
++static bool previousLayoutValid;
 +static char libraryVersion[64];
 +
 +#ifdef M_CORE_GBA
@@ -566,9 +590,9 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +static const struct retro_variable coreVariables[] = {
 +	{ "mgba_multi_instances", "Instances (restart content); 2|1|3" },
 +	{ "mgba_multi_link", "Local link cable (restart content); disabled|enabled" },
-+	{ "mgba_multi_speed_p1", "Player 1 speed (top-left); 1x|2x|3x|4x" },
-+	{ "mgba_multi_speed_p2", "Player 2 speed (top-right); 1x|2x|3x|4x" },
-+	{ "mgba_multi_speed_p3", "Player 3 speed (bottom-center); 1x|2x|3x|4x" },
++	{ "mgba_multi_speed_p1", "Player 1 speed target (R2 toggle, top-left); 1x|1.25x|1.50x|1.75x|2x|2.25x|2.50x|2.75x|3x" },
++	{ "mgba_multi_speed_p2", "Player 2 speed target (R2 toggle, top-right); 1x|1.25x|1.50x|1.75x|2x|2.25x|2.50x|2.75x|3x" },
++	{ "mgba_multi_speed_p3", "Player 3 speed target (R2 toggle, bottom-center); 1x|1.25x|1.50x|1.75x|2x|2.25x|2.50x|2.75x|3x" },
 +	{ "mgba_multi_audio", "Audio output; mixed|player 1|player 2|player 3" },
 +	{ "mgba_gb_model", "Game Boy model (restart content); Autodetect|Game Boy|Super Game Boy|Game Boy Color|Super Game Boy Color|Game Boy Advance" },
 +	{ "mgba_use_bios", "Use BIOS file if found (restart content); ON|OFF" },
@@ -672,44 +696,72 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +	return value && strcmp(value, "enabled") == 0;
 +}
 +
-+static unsigned _requestedSpeed(unsigned player) {
++static unsigned _requestedSpeedQuarters(unsigned player) {
 +	static const char* keys[MULTI_MAX_INSTANCES] = {
 +		"mgba_multi_speed_p1",
 +		"mgba_multi_speed_p2",
 +		"mgba_multi_speed_p3",
 +	};
 +	if (player >= MULTI_MAX_INSTANCES) {
-+		return 1;
++		return MULTI_SPEED_ONE;
 +	}
 +	const char* value = _getVariable(keys[player]);
-+	long speed = value ? strtol(value, NULL, 10) : 1;
-+	if (speed < 1) {
-+		speed = 1;
-+	} else if (speed > MULTI_MAX_SPEED) {
-+		speed = MULTI_MAX_SPEED;
++	if (!value) {
++		return MULTI_SPEED_ONE;
 +	}
-+	return (unsigned) speed;
++	errno = 0;
++	char* end;
++	double speed = strtod(value, &end);
++	if (end == value || errno || speed != speed || speed <= 1.0) {
++		return MULTI_SPEED_ONE;
++	}
++	if (speed >= 3.0) {
++		return MULTI_SPEED_MAX;
++	}
++	return (unsigned) (speed * MULTI_SPEED_ONE + 0.5);
 +}
 +
-+static void _loadSpeedSettings(void) {
++static void _initializeSpeedSettings(void) {
 +	unsigned i;
 +	for (i = 0; i < MULTI_MAX_INSTANCES; ++i) {
-+		speedMultiplier[i] = _requestedSpeed(i);
++		speedQuarters[i] = _requestedSpeedQuarters(i);
++		speedEnabled[i] = speedQuarters[i] > MULTI_SPEED_ONE;
++		speedPhase[i] = 0;
++		speedTogglePressed[i] = false;
 +	}
 +}
 +
-+static unsigned _effectiveSpeed(unsigned player) {
-+	if (linkActive || player >= instanceCount) {
-+		return 1;
++static void _updateSpeedSettings(void) {
++	unsigned i;
++	for (i = 0; i < MULTI_MAX_INSTANCES; ++i) {
++		unsigned requested = _requestedSpeedQuarters(i);
++		if (requested != speedQuarters[i]) {
++			speedQuarters[i] = requested;
++			speedEnabled[i] = requested > MULTI_SPEED_ONE;
++			speedPhase[i] = 0;
++		}
 +	}
-+	return speedMultiplier[player];
++}
++
++static unsigned _effectiveSpeedQuarters(unsigned player) {
++	if (linkActive || player >= instanceCount) {
++		return MULTI_SPEED_ONE;
++	}
++	return speedEnabled[player] ? speedQuarters[player] : MULTI_SPEED_ONE;
++}
++
++static unsigned _scheduleSpeed(unsigned player) {
++	speedPhase[player] += _effectiveSpeedQuarters(player);
++	unsigned steps = speedPhase[player] / MULTI_SPEED_ONE;
++	speedPhase[player] %= MULTI_SPEED_ONE;
++	return steps;
 +}
 +
 +static void _updateLinkSpeedWarning(void) {
 +	bool linkSpeedRequested = false;
 +	unsigned i;
 +	for (i = 0; i < instanceCount; ++i) {
-+		if (speedMultiplier[i] > 1) {
++		if (speedQuarters[i] > MULTI_SPEED_ONE) {
 +			linkSpeedRequested = true;
 +			break;
 +		}
@@ -821,7 +873,7 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +		}
 +	}
 +	audioSource = _requestedAudioSource();
-+	_loadSpeedSettings();
++	_updateSpeedSettings();
 +	_updateLinkSpeedWarning();
 +
 +	if (!warnedRestart && (_requestedInstanceCount() != instanceCount || _requestedLink() != linkRequested)) {
@@ -1487,6 +1539,7 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +	autosaveCounter = 0;
 +	compositeWidth = 0;
 +	compositeHeight = 0;
++	previousLayoutValid = false;
 +}
 +
 +static bool _loadGames(const struct retro_game_info* games, size_t count, bool cloneFirst) {
@@ -1497,7 +1550,7 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +	instanceCount = (unsigned) count;
 +	linkRequested = _requestedLink();
 +	audioSource = _requestedAudioSource();
-+	_loadSpeedSettings();
++	_initializeSpeedSettings();
 +
 +	unsigned i;
 +	for (i = 0; i < instanceCount; ++i) {
@@ -1517,26 +1570,66 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +	return true;
 +}
 +
-+static uint16_t _readKeys(unsigned port) {
++static uint16_t _readKeys(unsigned port, bool* speedToggle) {
 +	uint16_t keys = 0;
 +	unsigned i;
 +	if (useBitmasks) {
-+		int16_t mask = inputCallback(port, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_MASK);
++		uint16_t mask = (uint16_t) inputCallback(port, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_MASK);
 +		for (i = 0; i < sizeof(keymap) / sizeof(*keymap); ++i) {
 +			keys |= ((mask >> keymap[i]) & 1) << i;
 +		}
++		*speedToggle = (mask >> RETRO_DEVICE_ID_JOYPAD_R2) & 1;
 +	} else {
 +		for (i = 0; i < sizeof(keymap) / sizeof(*keymap); ++i) {
 +			keys |= (!!inputCallback(port, RETRO_DEVICE_JOYPAD, 0, keymap[i])) << i;
 +		}
++		*speedToggle = !!inputCallback(port, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2);
 +	}
 +	return keys;
 +}
 +
-+static void _setInputs(void) {
++static void _showSpeedMessage(unsigned player, const char* text) {
++	char messageText[96];
++	snprintf(messageText, sizeof(messageText), "Player %u speed: %s", player + 1, text);
++	struct retro_message message = {
++		messageText,
++		180,
++	};
++	environCallback(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
++	_frontendLog(RETRO_LOG_INFO, "%s", messageText);
++}
++
++static void _handleSpeedToggle(unsigned player, bool pressed) {
++	if (pressed && !speedTogglePressed[player]) {
++		if (linkActive) {
++			_showSpeedMessage(player, "locked at 1x while link cable is enabled");
++		} else if (speedQuarters[player] <= MULTI_SPEED_ONE) {
++			_showSpeedMessage(player, "target is 1x; choose a faster target in Core Options");
++		} else {
++			speedEnabled[player] = !speedEnabled[player];
++			speedPhase[player] = 0;
++			if (speedEnabled[player]) {
++				char speedText[32];
++				snprintf(speedText, sizeof(speedText), "%u.%02ux enabled",
++				         speedQuarters[player] / MULTI_SPEED_ONE,
++				         (speedQuarters[player] % MULTI_SPEED_ONE) * 25);
++				_showSpeedMessage(player, speedText);
++			} else {
++				_showSpeedMessage(player, "1.00x");
++			}
++		}
++	}
++	speedTogglePressed[player] = pressed;
++}
++
++static void _setInputs(bool processHotkeys) {
 +	unsigned i;
 +	for (i = 0; i < instanceCount; ++i) {
-+		instances[i].core->setKeys(instances[i].core, _readKeys(i));
++		bool speedToggle = false;
++		instances[i].core->setKeys(instances[i].core, _readKeys(i, &speedToggle));
++		if (processHotkeys) {
++			_handleSpeedToggle(i, speedToggle);
++		}
 +	}
 +}
 +
@@ -1644,7 +1737,11 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +		return false;
 +	}
 +	_updateGeometry(layout->width, layout->height);
-+	memset(compositeBuffer, 0, layout->width * layout->height * sizeof(*compositeBuffer));
++	if (!previousLayoutValid || memcmp(&previousLayout, layout, sizeof(*layout)) != 0) {
++		memset(compositeBuffer, 0, layout->width * layout->height * sizeof(*compositeBuffer));
++		previousLayout = *layout;
++		previousLayoutValid = true;
++	}
 +	return true;
 +}
 +
@@ -1671,7 +1768,7 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +	return true;
 +}
 +
-+static void _mixAudio(void);
++static void _mixAudio(const unsigned* frameSteps);
 +static void _periodicSave(void);
 +static bool _serializeCore(struct MultiInstance*, uint8_t*);
 +static bool _unserializeCore(struct MultiInstance*, const uint8_t*);
@@ -1762,19 +1859,24 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +	environCallback(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &format);
 +	useBitmasks = environCallback(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL);
 +
-+	struct retro_input_descriptor descriptors[MULTI_MAX_INSTANCES * 10 + 1];
++	struct retro_input_descriptor descriptors[MULTI_MAX_INSTANCES * INPUT_DESCRIPTORS_PER_PORT + 1];
 +	memset(descriptors, 0, sizeof(descriptors));
 +	static const char* names[] = { "A", "B", "Select", "Start", "Right", "Left", "Up", "Down", "R", "L" };
 +	unsigned port;
 +	unsigned key;
 +	for (port = 0; port < MULTI_MAX_INSTANCES; ++port) {
 +		for (key = 0; key < sizeof(keymap) / sizeof(*keymap); ++key) {
-+			struct retro_input_descriptor* descriptor = &descriptors[port * 10 + key];
++			struct retro_input_descriptor* descriptor = &descriptors[port * INPUT_DESCRIPTORS_PER_PORT + key];
 +			descriptor->port = port;
 +			descriptor->device = RETRO_DEVICE_JOYPAD;
 +			descriptor->id = keymap[key];
 +			descriptor->description = names[key];
 +		}
++		struct retro_input_descriptor* descriptor = &descriptors[port * INPUT_DESCRIPTORS_PER_PORT + 10];
++		descriptor->port = port;
++		descriptor->device = RETRO_DEVICE_JOYPAD;
++		descriptor->id = RETRO_DEVICE_ID_JOYPAD_R2;
++		descriptor->description = "Toggle individual speed";
 +	}
 +	environCallback(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, descriptors);
 +
@@ -1789,6 +1891,7 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +	compositeBuffer = malloc(COMPOSITE_BUFFER_PIXELS * sizeof(*compositeBuffer));
 +	compositeWidth = 0;
 +	compositeHeight = 0;
++	previousLayoutValid = false;
 +}
 +
 +void retro_deinit(void) {
@@ -1798,6 +1901,7 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +	free(mixedAudio);
 +	mixedAudio = NULL;
 +	mixedAudioCapacity = 0;
++	previousLayoutValid = false;
 +	useBitmasks = false;
 +}
 +
@@ -1822,7 +1926,7 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +	}
 +	inputPollCallback();
 +	if (!threadsStarted) {
-+		_setInputs();
++		_setInputs(false);
 +		if (!_startThreads()) {
 +			videoCallback(NULL, 0, 0, 0);
 +			return;
@@ -1830,23 +1934,48 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +	}
 +
 +	bool updated = false;
-+	_setInputs();
 +	if (environCallback(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated) {
 +		_applyRuntimeSettings();
 +	}
++	_setInputs(true);
 +
 +	struct MultiLayout layout;
 +	bool validLayout = _prepareComposite(&layout);
++	unsigned frameSteps[MULTI_MAX_INSTANCES] = { 1, 1, 1 };
 +	unsigned i;
 +	for (i = 0; i < instanceCount; ++i) {
-+		unsigned speed = _effectiveSpeed(i);
-+		unsigned step;
-+		for (step = 0; step < speed; ++step) {
-+			mCoreSyncWaitFrameStart(&instances[i].thread.impl->sync);
-+			if (validLayout && step + 1 == speed) {
-+				_copyInstanceVideo(i, &layout);
++		frameSteps[i] = _scheduleSpeed(i);
++	}
++
++	if (linkActive) {
++		for (i = 0; i < instanceCount; ++i) {
++			unsigned step;
++			for (step = 0; step < frameSteps[i]; ++step) {
++				mCoreSyncWaitFrameStart(&instances[i].thread.impl->sync);
++				if (validLayout && step + 1 == frameSteps[i]) {
++					_copyInstanceVideo(i, &layout);
++				}
++				mCoreSyncWaitFrameEnd(&instances[i].thread.impl->sync);
 +			}
-+			mCoreSyncWaitFrameEnd(&instances[i].thread.impl->sync);
++		}
++	} else {
++		unsigned maxSteps = 1;
++		for (i = 0; i < instanceCount; ++i) {
++			if (frameSteps[i] > maxSteps) {
++				maxSteps = frameSteps[i];
++			}
++		}
++		unsigned step;
++		for (step = 0; step < maxSteps; ++step) {
++			for (i = 0; i < instanceCount; ++i) {
++				if (frameSteps[i] > step) {
++					mCoreSyncWaitFrameStart(&instances[i].thread.impl->sync);
++					if (validLayout && step + 1 == frameSteps[i]) {
++						_copyInstanceVideo(i, &layout);
++					}
++					mCoreSyncWaitFrameEnd(&instances[i].thread.impl->sync);
++				}
++			}
 +		}
 +	}
 +	if (validLayout) {
@@ -1854,7 +1983,7 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +	} else {
 +		videoCallback(NULL, 0, 0, 0);
 +	}
-+	_mixAudio();
++	_mixAudio(frameSteps);
 +	_periodicSave();
 +}
 +
@@ -1862,14 +1991,16 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +	if (!instanceCount) {
 +		return;
 +	}
++	unsigned i;
++	for (i = 0; i < instanceCount; ++i) {
++		speedPhase[i] = 0;
++	}
 +	if (!threadsStarted) {
-+		unsigned i;
 +		for (i = 0; i < instanceCount; ++i) {
 +			instances[i].core->reset(instances[i].core);
 +		}
 +		return;
 +	}
-+	unsigned i;
 +	for (i = 0; i < instanceCount; ++i) {
 +		mCoreSyncSetVideoSync(&instances[i].thread.impl->sync, false);
 +	}
@@ -1934,6 +2065,11 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +		}
 +	}
 +	_continueThreads();
++	if (success) {
++		for (i = 0; i < instanceCount; ++i) {
++			speedPhase[i] = 0;
++		}
++	}
 +	return success;
 +}
 +
@@ -2029,18 +2165,19 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +	return 0;
 +}
 +
-+static void _mixAudio(void) {
++static void _mixAudio(const unsigned* frameSteps) {
 +	if (!audioCallback || !instanceCount) {
 +		return;
 +	}
 +
 +	size_t available[MULTI_MAX_INSTANCES] = { 0 };
++	size_t framesToRead[MULTI_MAX_INSTANCES] = { 0 };
 +	size_t outputFrames = SIZE_MAX;
 +	unsigned i;
 +	for (i = 0; i < instanceCount; ++i) {
 +		mCoreSyncLockAudio(&instances[i].thread.impl->sync);
 +		available[i] = mAudioBufferAvailable(instances[i].core->getAudioBuffer(instances[i].core));
-+		size_t normalizedFrames = available[i] / _effectiveSpeed(i);
++		size_t normalizedFrames = available[i] / frameSteps[i];
 +		if (normalizedFrames < outputFrames) {
 +			outputFrames = normalizedFrames;
 +		}
@@ -2055,7 +2192,8 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +
 +	bool allocationFailed = false;
 +	for (i = 0; i < instanceCount; ++i) {
-+		if (!_ensureAudioCapacity(&instances[i], available[i])) {
++		framesToRead[i] = outputFrames * frameSteps[i];
++		if (!_ensureAudioCapacity(&instances[i], framesToRead[i])) {
 +			allocationFailed = true;
 +			break;
 +		}
@@ -2077,26 +2215,56 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +	}
 +
 +	for (i = 0; i < instanceCount; ++i) {
-+		mAudioBufferRead(instances[i].core->getAudioBuffer(instances[i].core), instances[i].audio, available[i]);
++		mAudioBufferRead(instances[i].core->getAudioBuffer(instances[i].core), instances[i].audio, framesToRead[i]);
 +		mCoreSyncConsumeAudio(&instances[i].thread.impl->sync);
 +	}
 +
++	bool needsResampling = false;
++	for (i = 0; i < instanceCount; ++i) {
++		if (frameSteps[i] != 1) {
++			needsResampling = true;
++			break;
++		}
++	}
++	if (!needsResampling) {
++		if (audioSource > 0 && audioSource <= instanceCount) {
++			memcpy(mixedAudio, instances[audioSource - 1].audio,
++			       outputFrames * 2 * sizeof(*mixedAudio));
++		} else {
++			size_t sample;
++			for (sample = 0; sample < outputFrames * 2; ++sample) {
++				int32_t value = 0;
++				for (i = 0; i < instanceCount; ++i) {
++					value += instances[i].audio[sample];
++				}
++				mixedAudio[sample] = (int16_t) (value / (int32_t) instanceCount);
++			}
++		}
++		audioCallback(mixedAudio, outputFrames);
++		return;
++	}
++
 +	size_t frame;
-+	for (frame = 0; frame < outputFrames; ++frame) {
-+		unsigned channel;
-+		for (channel = 0; channel < 2; ++channel) {
-+			if (audioSource > 0 && audioSource <= instanceCount) {
-+				unsigned player = audioSource - 1;
-+				size_t sourceFrame = frame * available[player] / outputFrames;
-+				mixedAudio[frame * 2 + channel] = instances[player].audio[sourceFrame * 2 + channel];
-+				continue;
-+			}
-+			int32_t value = 0;
++	if (audioSource > 0 && audioSource <= instanceCount) {
++		unsigned player = audioSource - 1;
++		size_t sourceFrame = 0;
++		for (frame = 0; frame < outputFrames; ++frame) {
++			mixedAudio[frame * 2] = instances[player].audio[sourceFrame * 2];
++			mixedAudio[frame * 2 + 1] = instances[player].audio[sourceFrame * 2 + 1];
++			sourceFrame += frameSteps[player];
++		}
++	} else {
++		size_t sourceFrame[MULTI_MAX_INSTANCES] = { 0 };
++		for (frame = 0; frame < outputFrames; ++frame) {
++			int32_t left = 0;
++			int32_t right = 0;
 +			for (i = 0; i < instanceCount; ++i) {
-+				size_t sourceFrame = frame * available[i] / outputFrames;
-+				value += instances[i].audio[sourceFrame * 2 + channel];
++				left += instances[i].audio[sourceFrame[i] * 2];
++				right += instances[i].audio[sourceFrame[i] * 2 + 1];
++				sourceFrame[i] += frameSteps[i];
 +			}
-+			mixedAudio[frame * 2 + channel] = (int16_t) (value / (int32_t) instanceCount);
++			mixedAudio[frame * 2] = (int16_t) (left / (int32_t) instanceCount);
++			mixedAudio[frame * 2 + 1] = (int16_t) (right / (int32_t) instanceCount);
 +		}
 +	}
 +	audioCallback(mixedAudio, outputFrames);
@@ -2150,7 +2318,7 @@ index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b
 +}
 diff --git a/src/platform/libretro/mgba_multi_libretro.info b/src/platform/libretro/mgba_multi_libretro.info
 new file mode 100644
-index 0000000000000000000000000000000000000000..960a461772d8bed70db2b47c6304995b3b3c0599
+index 0000000000000000000000000000000000000000..526559bc90f6a267ebf35a47326d1a1f78fb43e7
 --- /dev/null
 +++ b/src/platform/libretro/mgba_multi_libretro.info
 @@ -0,0 +1,13 @@
@@ -2165,5 +2333,5 @@ index 0000000000000000000000000000000000000000..960a461772d8bed70db2b47c6304995b
 +database = "Nintendo - Game Boy Advance|Nintendo - Game Boy Color|Nintendo - Game Boy"
 +license = "MPLv2"
 +permissions = ""
-+display_version = "0.11-dev-multi.0.2.0"
++display_version = "0.11-dev-multi.0.3.0"
 +supports_no_game = "false"
