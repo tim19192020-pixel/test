@@ -218,15 +218,10 @@ cmake -S "$mgba_dir" -B "$core_build" -G Xcode \
 cmake --build "$core_build" --config Release \
   --target mgba_multi_libretro --parallel
 
-shopt -s nullglob
-core_dylibs=("$core_build"/Release/mgba_multi_libretro.dylib)
-if [ "${#core_dylibs[@]}" -ne 1 ]; then
-  core_dylibs=()
-  while IFS= read -r core_candidate; do
-    core_dylibs+=("$core_candidate")
-  done < <(find "$core_build" -type f -name mgba_multi_libretro.dylib -print)
-fi
-shopt -u nullglob
+core_dylibs=()
+while IFS= read -r core_candidate; do
+  core_dylibs+=("$core_candidate")
+done < <(find "$core_build" -type f -name mgba_multi_libretro.dylib -print)
 
 [ "${#core_dylibs[@]}" -eq 1 ] ||
   fail "expected exactly one mGBA Multi tvOS dylib"
