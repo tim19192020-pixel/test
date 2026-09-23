@@ -14,7 +14,7 @@ fi
 ipa_path="$1"
 [ -f "$ipa_path" ] || fail "IPA does not exist: $ipa_path"
 
-for command_name in unzip file; do
+for command_name in unzip; do
   command -v "$command_name" >/dev/null 2>&1 ||
     fail "required command not found: $command_name"
 done
@@ -62,18 +62,22 @@ fi
 if [ "$(uname -s)" = "Darwin" ]; then
   command -v xcrun >/dev/null 2>&1 || fail "xcrun is unavailable"
 
-  file "$core_binary" | grep -q 'arm64' ||
+  xcrun lipo -verify_arch arm64 "$core_binary" >/dev/null 2>&1 ||
     fail "mGBA Multi framework is not arm64"
-  xcrun vtool -show-build "$core_binary" | grep -qi 'platform.*TVOS' ||
+  core_build_info="$(xcrun vtool -show-build "$core_binary")" ||
+    fail "could not inspect the mGBA Multi framework platform metadata"
+  grep -qi 'platform.*TVOS' <<<"$core_build_info" ||
     fail "mGBA Multi framework is not a tvOS device binary"
 
   executable_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
     "$app_path/Info.plist")"
   app_binary="$app_path/$executable_name"
   [ -f "$app_binary" ] || fail "app executable is missing"
-  file "$app_binary" | grep -q 'arm64' ||
+  xcrun lipo -verify_arch arm64 "$app_binary" >/dev/null 2>&1 ||
     fail "RetroArchTV executable is not arm64"
-  xcrun vtool -show-build "$app_binary" | grep -qi 'platform.*TVOS' ||
+  app_build_info="$(xcrun vtool -show-build "$app_binary")" ||
+    fail "could not inspect the RetroArchTV platform metadata"
+  grep -qi 'platform.*TVOS' <<<"$app_build_info" ||
     fail "RetroArchTV executable is not a tvOS device binary"
 fi
 

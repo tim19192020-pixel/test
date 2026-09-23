@@ -164,7 +164,7 @@ fi
 [ "$(uname -s)" = "Darwin" ] ||
   fail "the final tvOS build requires macOS with Xcode"
 
-for command_name in cmake xcodebuild xcrun codesign file shasum ditto; do
+for command_name in cmake xcodebuild xcrun codesign shasum ditto; do
   require_command "$command_name"
 done
 xcrun --sdk appletvos --show-sdk-path >/dev/null 2>&1 ||
@@ -232,9 +232,11 @@ shopt -u nullglob
   fail "expected exactly one mGBA Multi tvOS dylib"
 core_dylib="${core_dylibs[0]}"
 
-file "$core_dylib" | grep -q 'arm64' ||
+xcrun lipo -verify_arch arm64 "$core_dylib" >/dev/null 2>&1 ||
   fail "custom core is not an arm64 binary"
-xcrun vtool -show-build "$core_dylib" | grep -qi 'platform.*TVOS' ||
+core_build_info="$(xcrun vtool -show-build "$core_dylib")" ||
+  fail "could not inspect the custom core platform metadata"
+grep -qi 'platform.*TVOS' <<<"$core_build_info" ||
   fail "custom core is not marked for the tvOS device platform"
 
 module_dir="$retroarch_dir/pkg/apple/tvOS/modules"
