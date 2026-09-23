@@ -232,8 +232,12 @@ shopt -u nullglob
   fail "expected exactly one mGBA Multi tvOS dylib"
 core_dylib="${core_dylibs[0]}"
 
-xcrun lipo "$core_dylib" -verify_arch arm64 >/dev/null 2>&1 ||
-  fail "custom core is not an arm64 binary"
+core_archs="$(xcrun lipo "$core_dylib" -archs)" ||
+  fail "could not inspect the custom core architectures"
+case " $core_archs " in
+  *" arm64 "*) ;;
+  *) fail "custom core is not an arm64 binary (architectures: ${core_archs:-none})" ;;
+esac
 core_build_info="$(xcrun vtool -show-build "$core_dylib")" ||
   fail "could not inspect the custom core platform metadata"
 grep -qi 'platform.*TVOS' <<<"$core_build_info" ||

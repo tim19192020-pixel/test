@@ -5,6 +5,6 @@
 47a7b3bb4ddea98b45ef3b58c9c7f13433c680edb67a39d8e47317b5b4ed3497  ./README.md
 db2e597494f52a2701421183af452c618661c0a556c3135e75240a7183da9c98  ./patches/mgba-multi.patch
 a96c78f015baf1fd89128764dab7afde9728d5fe28e293dcaca93efaf7a1484a  ./patches/retroarch-unsigned-frameworks.patch
-ab32ba2ad5bd771ca860c5c1afa82344b1536b5753134f702930a194b4874705  ./scripts/build-unsigned-ipa.sh
-627f6aa31ed574f162a39e798d73777dac4669d980fc4d5989c05b15d99ca8fa  ./scripts/validate-ipa.sh
+ace5115ec08d6947b1a84222835886ac75c03218f9a03f05e54d3b55c5aebd39  ./scripts/build-unsigned-ipa.sh
+b892e8e72ca1136231bbd3abf14c6f371c8140f29d470415348e19b758d85bad  ./scripts/validate-ipa.sh
 04973b33f62837eda4eb9e655cba306e0002840f873a6d00cea770b6f2e2e2e4  ./versions.env

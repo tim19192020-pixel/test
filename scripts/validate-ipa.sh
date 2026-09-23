@@ -62,8 +62,12 @@ fi
 if [ "$(uname -s)" = "Darwin" ]; then
   command -v xcrun >/dev/null 2>&1 || fail "xcrun is unavailable"
 
-  xcrun lipo "$core_binary" -verify_arch arm64 >/dev/null 2>&1 ||
-    fail "mGBA Multi framework is not arm64"
+  core_archs="$(xcrun lipo "$core_binary" -archs)" ||
+    fail "could not inspect the mGBA Multi framework architectures"
+  case " $core_archs " in
+    *" arm64 "*) ;;
+    *) fail "mGBA Multi framework is not arm64 (architectures: ${core_archs:-none})" ;;
+  esac
   core_build_info="$(xcrun vtool -show-build "$core_binary")" ||
     fail "could not inspect the mGBA Multi framework platform metadata"
   grep -qi 'platform.*TVOS' <<<"$core_build_info" ||
@@ -73,8 +77,12 @@ if [ "$(uname -s)" = "Darwin" ]; then
     "$app_path/Info.plist")"
   app_binary="$app_path/$executable_name"
   [ -f "$app_binary" ] || fail "app executable is missing"
-  xcrun lipo "$app_binary" -verify_arch arm64 >/dev/null 2>&1 ||
-    fail "RetroArchTV executable is not arm64"
+  app_archs="$(xcrun lipo "$app_binary" -archs)" ||
+    fail "could not inspect the RetroArchTV architectures"
+  case " $app_archs " in
+    *" arm64 "*) ;;
+    *) fail "RetroArchTV executable is not arm64 (architectures: ${app_archs:-none})" ;;
+  esac
   app_build_info="$(xcrun vtool -show-build "$app_binary")" ||
     fail "could not inspect the RetroArchTV platform metadata"
   grep -qi 'platform.*TVOS' <<<"$app_build_info" ||
