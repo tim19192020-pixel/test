@@ -2,8 +2,9 @@
 
 This kit builds an unsigned, device-only Apple TV IPA containing RetroArch
 1.22.2 and the custom mGBA Multi libretro core. The core renders one, two, or
-three emulators in a single horizontal RetroArch view, keeps independent save
-files, and can connect compatible games through local emulated link support.
+three emulators in a stable widescreen layout, supports independent per-player
+speed controls, keeps independent save files, and can connect compatible games
+through local emulated link support.
 
 The source is fully pinned and the resulting IPA contains only the custom mGBA
 Multi core. No games, BIOS files, certificates, provisioning profiles, or
@@ -40,7 +41,7 @@ chmod +x scripts/*.sh
 The result is written to:
 
 ~~~text
-dist/RetroArchTV-mGBA-Multi-1.22.2-core-0.1.1-unsigned.ipa
+dist/RetroArchTV-mGBA-Multi-1.22.2-core-0.2.0-unsigned.ipa
 ~~~
 
 The script first validates the source revisions and patches, builds the custom
@@ -83,8 +84,10 @@ TVOS_DEPLOYMENT_TARGET=15.0 ./scripts/build-unsigned-ipa.sh
 4. Open **Quick Menu > Core Options**.
 5. Set **Instances** to 1, 2, or 3.
 6. Set **Local link cable** on or off.
-7. Close and reload the content after changing either option.
-8. Assign controllers to RetroArch input ports 1 through 3.
+7. Set the independent **Player 1/2/3 speed** options from 1x through 4x.
+8. Close and reload the content after changing the instance count or link
+   option. Speed changes apply immediately.
+9. Assign controllers to RetroArch input ports 1 through 3.
 
 Normal **Load Content** duplicates one selected ROM across the configured
 instances. To run different games or versions, use **Load Subsystem** and pick
@@ -92,15 +95,20 @@ either **mGBA Link Cable (2 ROMs)** or **mGBA Link Cable (3 ROMs)**.
 
 ## Save layout
 
-| Player | Save file |
-| --- | --- |
-| 1 | RetroArch's normal `<content>.srm` |
-| 2 | `<ROM stem>.p2.srm` |
-| 3 | `<ROM stem>.p3.srm` |
+| Player | Three-player placement | Save file |
+| --- | --- | --- |
+| 1 | Top-left | RetroArch's normal `<content>.srm` |
+| 2 | Top-right | `<ROM stem>.p2.srm` |
+| 3 | Bottom-center | `<ROM stem>.p3.srm` |
 
 Player 2 and 3 battery saves are flushed periodically and when content closes.
 A RetroArch save state stores all active instances together and must be loaded
 with the same instance count.
+
+The placement is deterministic: the controller port, screen position, and save
+slot always share the same player number after content is restarted. The
+native-resolution screens are padded toward 16:9 and uniformly scaled, so no
+individual screen is stretched or cropped.
 
 ## Link behavior
 
@@ -111,6 +119,8 @@ with the same instance count.
 - Link support is local to the core and is separate from RetroArch netplay.
 - Compatibility still depends on the games using mutually compatible link
   protocols.
+- Link is disabled by default. While it is enabled, all individual speed
+  controls are held at 1x so linked systems remain synchronized.
 
 ## Pinned source
 
@@ -118,7 +128,7 @@ with the same instance count.
 | --- | --- |
 | RetroArch | 1.22.2 / `69a4f0ea1e8aaf442ae4858f2e7f2b31a1776576` |
 | mGBA base | `3a5bc24629867576b0fb576a5d5a21d3b3d6b576` |
-| mGBA Multi patch | core version 0.1.1 |
+| mGBA Multi patch | core version 0.2.0 |
 | tvOS architecture | arm64 device |
 
 See [LICENSES.md](LICENSES.md) for licensing and source obligations.
@@ -135,5 +145,7 @@ See [LICENSES.md](LICENSES.md) for licensing and source obligations.
   final bundle identifier.
 - **Only one game is shown multiple times:** that is the normal Load Content
   behavior. Use Load Subsystem to select separate ROMs.
+- **A speed option has no effect:** disable Local link cable and reload the
+  content. Linked instances intentionally remain at 1x.
 - **Link does not start:** enable Local link cable, use the same hardware
   family, load link-compatible games, and reload content.

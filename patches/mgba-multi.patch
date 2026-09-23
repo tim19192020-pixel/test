@@ -92,20 +92,21 @@ index 834e9fd9ceb94a972941fb7b12494270702601e8..c4b63b8b1da29600e32662063aed79ae
  	message(STATUS "	Shared: ${BUILD_SHARED}")
 diff --git a/README_MULTI_LIBRETRO.md b/README_MULTI_LIBRETRO.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..2bd5757cc2604755fd009661360805d137379138
+index 0000000000000000000000000000000000000000..7472c991f442ea392ecb51a5f78091cb69a0ff97
 --- /dev/null
 +++ b/README_MULTI_LIBRETRO.md
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,141 @@
 +# mGBA Multi libretro core
 +
 +This fork adds a separate `mGBA Multi` libretro target. It keeps the normal
 +mGBA libretro core unchanged and places one, two, or three emulated systems in
-+a single horizontal RetroArch video surface.
++a stable widescreen layout.
 +
 +## Features
 +
 +- One to three local instances, with two as the default.
 +- Independent controllers on RetroArch ports 1, 2, and 3.
++- Independent 1x, 2x, 3x, or 4x speed controls for every unlinked instance.
 +- One mixed audio stream, or audio from a selected player.
 +- Separate battery saves for every instance.
 +- One combined RetroArch save state containing every running instance.
@@ -115,6 +116,10 @@ index 0000000000000000000000000000000000000000..2bd5757cc2604755fd009661360805d1
 +- RetroArch subsystems for loading two or three different ROMs. Normal
 +  **Load Content** duplicates the selected ROM for the configured number of
 +  instances.
++
++Link emulation is disabled by default so unlinked instances can run at full
++speed and use independent speed multipliers. Enable it only for games that
++need cable communication.
 +
 +## Build
 +
@@ -171,13 +176,35 @@ index 0000000000000000000000000000000000000000..2bd5757cc2604755fd009661360805d1
 +2. Open **Quick Menu > Core Options**.
 +3. Set **Instances** to 1, 2, or 3 and choose whether **Local link cable** is
 +   enabled.
-+4. Restart or reload the content after changing either of those two options.
-+5. Assign controllers to RetroArch ports 1 through 3.
++4. Set **Player 1 speed**, **Player 2 speed**, and **Player 3 speed** as needed.
++5. Restart or reload the content after changing the instance count or link
++   setting. Speed changes apply immediately.
++6. Assign controllers to RetroArch ports 1 through 3.
 +
 +Loading one ROM through **Load Content** runs that ROM in every instance. To
 +use different games or versions, use RetroArch's **Load Subsystem** flow and
 +choose either **mGBA Link Cable (2 ROMs)** or
 +**mGBA Link Cable (3 ROMs)**.
++
++## Screen layout and speed
++
++Player placement is deterministic and remains tied to the same controller and
++save slot after content is restarted:
++
++| Player | Placement with three instances | Save slot |
++| --- | --- | --- |
++| 1 | Top-left | RetroArch's normal save |
++| 2 | Top-right | `.p2.srm` |
++| 3 | Bottom-center | `.p3.srm` |
++
++The core pads the native-resolution layout toward 16:9 without reducing the
++largest uniform scale that fits the display. It never stretches an individual
++screen or changes its aspect ratio. With two instances, Player 1 stays on the
++left and Player 2 stays on the right.
++
++Individual speed multipliers advance only the selected instance. Audio from a
++sped-up instance is resampled into the normal frontend time window. Link cable
++sessions force all players to 1x because linked systems must share a timeline.
 +
 +## Save files
 +
@@ -207,6 +234,7 @@ index 0000000000000000000000000000000000000000..2bd5757cc2604755fd009661360805d1
 +  multiplayer, load ROMs that implement mutually compatible link protocols.
 +- The instance count and link topology are fixed for a content session and
 +  take effect after content restart.
++- Individual speed controls are held at 1x while link emulation is active.
 +
 +This fork retains mGBA's Mozilla Public License 2.0 licensing.
 diff --git a/include/mgba/core/thread.h b/include/mgba/core/thread.h
@@ -342,10 +370,10 @@ index 8450f0d25d4b8e933b56370d01ba050f0a7f1405..60e35e1e82364a82fbd9b67e11b84d29
  				core->videoLogger = &gbacore->threadProxy.d;
 diff --git a/src/platform/libretro/libretro_multi.c b/src/platform/libretro/libretro_multi.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de5d0af859
+index 0000000000000000000000000000000000000000..2959a3ec3904942dc63bbfa43852ff7b4dae74fa
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi.c
-@@ -0,0 +1,1603 @@
+@@ -0,0 +1,1774 @@
 +/* Copyright (c) 2013-2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -408,18 +436,22 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +#endif
 +
 +#define MULTI_MAX_INSTANCES 3
++#define MULTI_MAX_SPEED 4
 +#define VIDEO_WIDTH_MAX 256
 +#define VIDEO_HEIGHT_MAX 224
-+#define COMPOSITE_WIDTH_MAX (VIDEO_WIDTH_MAX * MULTI_MAX_INSTANCES)
++#define COMPOSITE_GRID_HEIGHT_MAX (VIDEO_HEIGHT_MAX * 2)
++#define COMPOSITE_WIDTH_MAX (COMPOSITE_GRID_HEIGHT_MAX * 16 / 9)
++#define COMPOSITE_HEIGHT_MAX COMPOSITE_GRID_HEIGHT_MAX
 +#define VIDEO_BUFFER_PIXELS (VIDEO_WIDTH_MAX * VIDEO_HEIGHT_MAX)
-+#define COMPOSITE_BUFFER_PIXELS (COMPOSITE_WIDTH_MAX * VIDEO_HEIGHT_MAX)
++#define COMPOSITE_BUFFER_PIXELS (COMPOSITE_WIDTH_MAX * COMPOSITE_HEIGHT_MAX)
++#define AUDIO_BUFFER_FRAMES 8192
 +#define SAVE_BUFFER_SIZE (128 * 1024)
 +#define AUTOSAVE_INTERVAL_FRAMES 300
 +#define STATE_HEADER_SIZE 32
 +#define STATE_SLOT_SIZE (1024 * 1024)
 +#define STATE_SLOT_PAYLOAD (STATE_SLOT_SIZE - sizeof(uint64_t))
 +#define MULTI_STATE_VERSION 1
-+#define MULTI_FRONTEND_VERSION "0.1.0"
++#define MULTI_FRONTEND_VERSION "0.2.0"
 +#define MULTI_SUBSYSTEM_2 0x4D474202U
 +#define MULTI_SUBSYSTEM_3 0x4D474203U
 +
@@ -457,6 +489,19 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +#endif
 +};
 +
++struct MultiPlacement {
++	unsigned x;
++	unsigned y;
++	unsigned width;
++	unsigned height;
++};
++
++struct MultiLayout {
++	unsigned width;
++	unsigned height;
++	struct MultiPlacement placements[MULTI_MAX_INSTANCES];
++};
++
 +#ifdef M_CORE_GB
 +struct GBLinkContext {
 +	struct GBSIOLockstep lockstep;
@@ -485,8 +530,10 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +static bool threadsStarted;
 +static bool useBitmasks = true;
 +static bool warnedRestart;
++static bool warnedLinkSpeed;
 +static unsigned autosaveCounter;
 +static unsigned audioSource;
++static unsigned speedMultiplier[MULTI_MAX_INSTANCES] = { 1, 1, 1 };
 +
 +static mColor* compositeBuffer;
 +static int16_t* mixedAudio;
@@ -518,7 +565,10 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +
 +static const struct retro_variable coreVariables[] = {
 +	{ "mgba_multi_instances", "Instances (restart content); 2|1|3" },
-+	{ "mgba_multi_link", "Local link cable (restart content); enabled|disabled" },
++	{ "mgba_multi_link", "Local link cable (restart content); disabled|enabled" },
++	{ "mgba_multi_speed_p1", "Player 1 speed (top-left); 1x|2x|3x|4x" },
++	{ "mgba_multi_speed_p2", "Player 2 speed (top-right); 1x|2x|3x|4x" },
++	{ "mgba_multi_speed_p3", "Player 3 speed (bottom-center); 1x|2x|3x|4x" },
 +	{ "mgba_multi_audio", "Audio output; mixed|player 1|player 2|player 3" },
 +	{ "mgba_gb_model", "Game Boy model (restart content); Autodetect|Game Boy|Super Game Boy|Game Boy Color|Super Game Boy Color|Game Boy Advance" },
 +	{ "mgba_use_bios", "Use BIOS file if found (restart content); ON|OFF" },
@@ -619,7 +669,62 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +
 +static bool _requestedLink(void) {
 +	const char* value = _getVariable("mgba_multi_link");
-+	return !value || strcmp(value, "disabled") != 0;
++	return value && strcmp(value, "enabled") == 0;
++}
++
++static unsigned _requestedSpeed(unsigned player) {
++	static const char* keys[MULTI_MAX_INSTANCES] = {
++		"mgba_multi_speed_p1",
++		"mgba_multi_speed_p2",
++		"mgba_multi_speed_p3",
++	};
++	if (player >= MULTI_MAX_INSTANCES) {
++		return 1;
++	}
++	const char* value = _getVariable(keys[player]);
++	long speed = value ? strtol(value, NULL, 10) : 1;
++	if (speed < 1) {
++		speed = 1;
++	} else if (speed > MULTI_MAX_SPEED) {
++		speed = MULTI_MAX_SPEED;
++	}
++	return (unsigned) speed;
++}
++
++static void _loadSpeedSettings(void) {
++	unsigned i;
++	for (i = 0; i < MULTI_MAX_INSTANCES; ++i) {
++		speedMultiplier[i] = _requestedSpeed(i);
++	}
++}
++
++static unsigned _effectiveSpeed(unsigned player) {
++	if (linkActive || player >= instanceCount) {
++		return 1;
++	}
++	return speedMultiplier[player];
++}
++
++static void _updateLinkSpeedWarning(void) {
++	bool linkSpeedRequested = false;
++	unsigned i;
++	for (i = 0; i < instanceCount; ++i) {
++		if (speedMultiplier[i] > 1) {
++			linkSpeedRequested = true;
++			break;
++		}
++	}
++	if (linkActive && linkSpeedRequested && !warnedLinkSpeed) {
++		struct retro_message message = {
++			"Individual speed is held at 1x while link cable is enabled",
++			240,
++		};
++		environCallback(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
++		_frontendLog(RETRO_LOG_WARN, "%s", message.msg);
++		warnedLinkSpeed = true;
++	} else if (!linkActive || !linkSpeedRequested) {
++		warnedLinkSpeed = false;
++	}
 +}
 +
 +static unsigned _requestedAudioSource(void) {
@@ -716,6 +821,8 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +		}
 +	}
 +	audioSource = _requestedAudioSource();
++	_loadSpeedSettings();
++	_updateLinkSpeedWarning();
 +
 +	if (!warnedRestart && (_requestedInstanceCount() != instanceCount || _requestedLink() != linkRequested)) {
 +		struct retro_message message = {
@@ -982,7 +1089,7 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +
 +	instance->video = malloc(VIDEO_BUFFER_PIXELS * sizeof(*instance->video));
 +	instance->saveData = anonymousMemoryMap(SAVE_BUFFER_SIZE);
-+	instance->audioCapacity = 2048;
++	instance->audioCapacity = AUDIO_BUFFER_FRAMES;
 +	instance->audio = malloc(instance->audioCapacity * 2 * sizeof(*instance->audio));
 +	if (!instance->video || !instance->saveData || !instance->audio) {
 +		return false;
@@ -990,7 +1097,7 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +	memset(instance->video, 0, VIDEO_BUFFER_PIXELS * sizeof(*instance->video));
 +	memset(instance->saveData, 0xFF, SAVE_BUFFER_SIZE);
 +	instance->core->setVideoBuffer(instance->core, instance->video, VIDEO_WIDTH_MAX);
-+	instance->core->setAudioBufferSize(instance->core, 2048);
++	instance->core->setAudioBufferSize(instance->core, AUDIO_BUFFER_FRAMES);
 +
 +	if (!instance->core->loadROM(instance->core, rom)) {
 +		_frontendLog(RETRO_LOG_ERROR, "player %u ROM failed to load", player + 1);
@@ -1293,6 +1400,7 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +		_frontendLog(RETRO_LOG_ERROR, "link cable setup failed");
 +		return false;
 +	}
++	_updateLinkSpeedWarning();
 +	deferredSetup = false;
 +	return true;
 +}
@@ -1375,6 +1483,7 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +	deferredSetup = false;
 +	linkRequested = false;
 +	warnedRestart = false;
++	warnedLinkSpeed = false;
 +	autosaveCounter = 0;
 +	compositeWidth = 0;
 +	compositeHeight = 0;
@@ -1388,6 +1497,7 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +	instanceCount = (unsigned) count;
 +	linkRequested = _requestedLink();
 +	audioSource = _requestedAudioSource();
++	_loadSpeedSettings();
 +
 +	unsigned i;
 +	for (i = 0; i < instanceCount; ++i) {
@@ -1402,6 +1512,7 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +
 +	deferredSetup = true;
 +	warnedRestart = false;
++	warnedLinkSpeed = false;
 +	autosaveCounter = 0;
 +	return true;
 +}
@@ -1429,21 +1540,87 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +	}
 +}
 +
-+static void _getCompositeDimensions(unsigned* widthOut, unsigned* heightOut) {
-+	unsigned width = 0;
-+	unsigned height = 0;
++static bool _getCompositeLayout(struct MultiLayout* layout) {
++	memset(layout, 0, sizeof(*layout));
++	if (!instanceCount) {
++		return false;
++	}
++
 +	unsigned i;
 +	for (i = 0; i < instanceCount; ++i) {
-+		unsigned instanceWidth = 0;
-+		unsigned instanceHeight = 0;
-+		instances[i].core->currentVideoSize(instances[i].core, &instanceWidth, &instanceHeight);
-+		width += instanceWidth;
-+		if (instanceHeight > height) {
-+			height = instanceHeight;
++		instances[i].core->currentVideoSize(instances[i].core,
++		                                      &layout->placements[i].width,
++		                                      &layout->placements[i].height);
++		if (!layout->placements[i].width || !layout->placements[i].height ||
++		    layout->placements[i].width > VIDEO_WIDTH_MAX ||
++		    layout->placements[i].height > VIDEO_HEIGHT_MAX) {
++			return false;
 +		}
 +	}
-+	*widthOut = width;
-+	*heightOut = height;
++
++	if (instanceCount == 1) {
++		layout->width = layout->placements[0].width;
++		layout->height = layout->placements[0].height;
++		return true;
++	}
++
++	unsigned contentWidth;
++	unsigned contentHeight;
++	if (instanceCount == 2) {
++		contentWidth = layout->placements[0].width + layout->placements[1].width;
++		contentHeight = layout->placements[0].height > layout->placements[1].height
++			? layout->placements[0].height
++			: layout->placements[1].height;
++		layout->placements[0].x = 0;
++		layout->placements[0].y = (contentHeight - layout->placements[0].height) / 2;
++		layout->placements[1].x = layout->placements[0].width;
++		layout->placements[1].y = (contentHeight - layout->placements[1].height) / 2;
++	} else {
++		unsigned topWidth = layout->placements[0].width + layout->placements[1].width;
++		unsigned topHeight = layout->placements[0].height > layout->placements[1].height
++			? layout->placements[0].height
++			: layout->placements[1].height;
++		contentWidth = topWidth > layout->placements[2].width
++			? topWidth
++			: layout->placements[2].width;
++		contentHeight = topHeight + layout->placements[2].height;
++
++		unsigned topX = (contentWidth - topWidth) / 2;
++		layout->placements[0].x = topX;
++		layout->placements[0].y = (topHeight - layout->placements[0].height) / 2;
++		layout->placements[1].x = topX + layout->placements[0].width;
++		layout->placements[1].y = (topHeight - layout->placements[1].height) / 2;
++		layout->placements[2].x = (contentWidth - layout->placements[2].width) / 2;
++		layout->placements[2].y = topHeight;
++	}
++
++	/* Pad toward 16:9 without exceeding it. This lets RetroArch use the
++	 * largest possible uniform scale on a widescreen display, while every
++	 * instance remains at native aspect ratio. */
++	layout->width = contentWidth;
++	layout->height = contentHeight;
++	if (contentWidth * 9 < contentHeight * 16) {
++		unsigned widescreenWidth = contentHeight * 16 / 9;
++		if (widescreenWidth > layout->width) {
++			layout->width = widescreenWidth;
++		}
++	} else if (contentWidth * 9 > contentHeight * 16) {
++		unsigned widescreenHeight = contentWidth * 9 / 16;
++		if (widescreenHeight > layout->height) {
++			layout->height = widescreenHeight;
++		}
++	}
++	if (layout->width > COMPOSITE_WIDTH_MAX || layout->height > COMPOSITE_HEIGHT_MAX) {
++		return false;
++	}
++
++	unsigned xPadding = (layout->width - contentWidth) / 2;
++	unsigned yPadding = (layout->height - contentHeight) / 2;
++	for (i = 0; i < instanceCount; ++i) {
++		layout->placements[i].x += xPadding;
++		layout->placements[i].y += yPadding;
++	}
++	return true;
 +}
 +
 +static void _updateGeometry(unsigned width, unsigned height) {
@@ -1456,39 +1633,29 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +		.base_width = width,
 +		.base_height = height,
 +		.max_width = COMPOSITE_WIDTH_MAX,
-+		.max_height = VIDEO_HEIGHT_MAX,
++		.max_height = COMPOSITE_HEIGHT_MAX,
 +		.aspect_ratio = (float) width / (float) height,
 +	};
 +	environCallback(RETRO_ENVIRONMENT_SET_GEOMETRY, &geometry);
 +}
 +
-+static void _composeVideo(void) {
-+	unsigned width;
-+	unsigned height;
-+	_getCompositeDimensions(&width, &height);
-+	if (!width || !height || width > COMPOSITE_WIDTH_MAX || height > VIDEO_HEIGHT_MAX) {
-+		videoCallback(NULL, 0, 0, 0);
-+		return;
++static bool _prepareComposite(struct MultiLayout* layout) {
++	if (!_getCompositeLayout(layout)) {
++		return false;
 +	}
-+	_updateGeometry(width, height);
-+	memset(compositeBuffer, 0, width * height * sizeof(*compositeBuffer));
++	_updateGeometry(layout->width, layout->height);
++	memset(compositeBuffer, 0, layout->width * layout->height * sizeof(*compositeBuffer));
++	return true;
++}
 +
-+	unsigned x = 0;
-+	unsigned i;
-+	for (i = 0; i < instanceCount; ++i) {
-+		unsigned instanceWidth;
-+		unsigned instanceHeight;
-+		instances[i].core->currentVideoSize(instances[i].core, &instanceWidth, &instanceHeight);
-+		unsigned yOffset = (height - instanceHeight) / 2;
-+		unsigned y;
-+		for (y = 0; y < instanceHeight; ++y) {
-+			memcpy(&compositeBuffer[(y + yOffset) * width + x],
-+			       &instances[i].video[y * VIDEO_WIDTH_MAX],
-+			       instanceWidth * sizeof(*compositeBuffer));
-+		}
-+		x += instanceWidth;
++static void _copyInstanceVideo(unsigned player, const struct MultiLayout* layout) {
++	const struct MultiPlacement* placement = &layout->placements[player];
++	unsigned y;
++	for (y = 0; y < placement->height; ++y) {
++		memcpy(&compositeBuffer[(y + placement->y) * layout->width + placement->x],
++		       &instances[player].video[y * VIDEO_WIDTH_MAX],
++		       placement->width * sizeof(*compositeBuffer));
 +	}
-+	videoCallback(compositeBuffer, width, height, width * sizeof(*compositeBuffer));
 +}
 +
 +static bool _ensureAudioCapacity(struct MultiInstance* instance, size_t frames) {
@@ -1558,15 +1725,27 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +
 +void retro_get_system_av_info(struct retro_system_av_info* info) {
 +	memset(info, 0, sizeof(*info));
-+	unsigned width = 240 * (instanceCount ? instanceCount : _requestedInstanceCount());
-+	unsigned height = 160;
-+	if (instanceCount) {
-+		_getCompositeDimensions(&width, &height);
++	unsigned requestedCount = instanceCount ? instanceCount : _requestedInstanceCount();
++	unsigned width;
++	unsigned height;
++	struct MultiLayout layout;
++	if (instanceCount && _getCompositeLayout(&layout)) {
++		width = layout.width;
++		height = layout.height;
++	} else if (requestedCount == 1) {
++		width = 240;
++		height = 160;
++	} else if (requestedCount == 2) {
++		width = 480;
++		height = 270;
++	} else {
++		width = 568;
++		height = 320;
 +	}
 +	info->geometry.base_width = width;
 +	info->geometry.base_height = height;
 +	info->geometry.max_width = COMPOSITE_WIDTH_MAX;
-+	info->geometry.max_height = VIDEO_HEIGHT_MAX;
++	info->geometry.max_height = COMPOSITE_HEIGHT_MAX;
 +	info->geometry.aspect_ratio = height ? (float) width / (float) height : 0.0f;
 +	if (instanceCount && instances[0].core) {
 +		struct mCore* core = instances[0].core;
@@ -1651,19 +1830,31 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +	}
 +
 +	bool updated = false;
-+	unsigned i;
-+	for (i = 0; i < instanceCount; ++i) {
-+		mCoreSyncWaitFrameStart(&instances[i].thread.impl->sync);
-+	}
 +	_setInputs();
 +	if (environCallback(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated) {
 +		_applyRuntimeSettings();
 +	}
-+	_composeVideo();
-+	_mixAudio();
++
++	struct MultiLayout layout;
++	bool validLayout = _prepareComposite(&layout);
++	unsigned i;
 +	for (i = 0; i < instanceCount; ++i) {
-+		mCoreSyncWaitFrameEnd(&instances[i].thread.impl->sync);
++		unsigned speed = _effectiveSpeed(i);
++		unsigned step;
++		for (step = 0; step < speed; ++step) {
++			mCoreSyncWaitFrameStart(&instances[i].thread.impl->sync);
++			if (validLayout && step + 1 == speed) {
++				_copyInstanceVideo(i, &layout);
++			}
++			mCoreSyncWaitFrameEnd(&instances[i].thread.impl->sync);
++		}
 +	}
++	if (validLayout) {
++		videoCallback(compositeBuffer, layout.width, layout.height, layout.width * sizeof(*compositeBuffer));
++	} else {
++		videoCallback(NULL, 0, 0, 0);
++	}
++	_mixAudio();
 +	_periodicSave();
 +}
 +
@@ -1843,17 +2034,19 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +		return;
 +	}
 +
-+	size_t frames = SIZE_MAX;
++	size_t available[MULTI_MAX_INSTANCES] = { 0 };
++	size_t outputFrames = SIZE_MAX;
 +	unsigned i;
 +	for (i = 0; i < instanceCount; ++i) {
 +		mCoreSyncLockAudio(&instances[i].thread.impl->sync);
-+		size_t available = mAudioBufferAvailable(instances[i].core->getAudioBuffer(instances[i].core));
-+		if (available < frames) {
-+			frames = available;
++		available[i] = mAudioBufferAvailable(instances[i].core->getAudioBuffer(instances[i].core));
++		size_t normalizedFrames = available[i] / _effectiveSpeed(i);
++		if (normalizedFrames < outputFrames) {
++			outputFrames = normalizedFrames;
 +		}
 +	}
 +
-+	if (frames == SIZE_MAX || !frames) {
++	if (outputFrames == SIZE_MAX || !outputFrames) {
 +		for (i = 0; i < instanceCount; ++i) {
 +			mCoreSyncConsumeAudio(&instances[i].thread.impl->sync);
 +		}
@@ -1862,18 +2055,18 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +
 +	bool allocationFailed = false;
 +	for (i = 0; i < instanceCount; ++i) {
-+		if (!_ensureAudioCapacity(&instances[i], frames)) {
++		if (!_ensureAudioCapacity(&instances[i], available[i])) {
 +			allocationFailed = true;
 +			break;
 +		}
 +	}
-+	if (mixedAudioCapacity < frames) {
-+		int16_t* audio = realloc(mixedAudio, frames * 2 * sizeof(*audio));
++	if (mixedAudioCapacity < outputFrames) {
++		int16_t* audio = realloc(mixedAudio, outputFrames * 2 * sizeof(*audio));
 +		if (!audio) {
 +			allocationFailed = true;
 +		} else {
 +			mixedAudio = audio;
-+			mixedAudioCapacity = frames;
++			mixedAudioCapacity = outputFrames;
 +		}
 +	}
 +	if (allocationFailed) {
@@ -1884,23 +2077,29 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +	}
 +
 +	for (i = 0; i < instanceCount; ++i) {
-+		mAudioBufferRead(instances[i].core->getAudioBuffer(instances[i].core), instances[i].audio, frames);
++		mAudioBufferRead(instances[i].core->getAudioBuffer(instances[i].core), instances[i].audio, available[i]);
 +		mCoreSyncConsumeAudio(&instances[i].thread.impl->sync);
 +	}
 +
-+	if (audioSource > 0 && audioSource <= instanceCount) {
-+		memcpy(mixedAudio, instances[audioSource - 1].audio, frames * 2 * sizeof(*mixedAudio));
-+	} else {
-+		size_t sample;
-+		for (sample = 0; sample < frames * 2; ++sample) {
++	size_t frame;
++	for (frame = 0; frame < outputFrames; ++frame) {
++		unsigned channel;
++		for (channel = 0; channel < 2; ++channel) {
++			if (audioSource > 0 && audioSource <= instanceCount) {
++				unsigned player = audioSource - 1;
++				size_t sourceFrame = frame * available[player] / outputFrames;
++				mixedAudio[frame * 2 + channel] = instances[player].audio[sourceFrame * 2 + channel];
++				continue;
++			}
 +			int32_t value = 0;
 +			for (i = 0; i < instanceCount; ++i) {
-+				value += instances[i].audio[sample];
++				size_t sourceFrame = frame * available[i] / outputFrames;
++				value += instances[i].audio[sourceFrame * 2 + channel];
 +			}
-+			mixedAudio[sample] = (int16_t) (value / (int32_t) instanceCount);
++			mixedAudio[frame * 2 + channel] = (int16_t) (value / (int32_t) instanceCount);
 +		}
 +	}
-+	audioCallback(mixedAudio, frames);
++	audioCallback(mixedAudio, outputFrames);
 +}
 +
 +static void _periodicSave(void) {
@@ -1951,7 +2150,7 @@ index 0000000000000000000000000000000000000000..f807203bb6f7643e9712d4047dba22de
 +}
 diff --git a/src/platform/libretro/mgba_multi_libretro.info b/src/platform/libretro/mgba_multi_libretro.info
 new file mode 100644
-index 0000000000000000000000000000000000000000..1447ed0e6525803882b4500ed563019692103bd4
+index 0000000000000000000000000000000000000000..960a461772d8bed70db2b47c6304995b3b3c0599
 --- /dev/null
 +++ b/src/platform/libretro/mgba_multi_libretro.info
 @@ -0,0 +1,13 @@
@@ -1966,5 +2165,5 @@ index 0000000000000000000000000000000000000000..1447ed0e6525803882b4500ed5630196
 +database = "Nintendo - Game Boy Advance|Nintendo - Game Boy Color|Nintendo - Game Boy"
 +license = "MPLv2"
 +permissions = ""
-+display_version = "0.11-dev-multi.0.1.0"
++display_version = "0.11-dev-multi.0.2.0"
 +supports_no_game = "false"
