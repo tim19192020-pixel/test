@@ -62,7 +62,7 @@ fi
 if [ "$(uname -s)" = "Darwin" ]; then
   command -v xcrun >/dev/null 2>&1 || fail "xcrun is unavailable"
 
-  xcrun lipo -verify_arch arm64 "$core_binary" >/dev/null 2>&1 ||
+  xcrun lipo "$core_binary" -verify_arch arm64 >/dev/null 2>&1 ||
     fail "mGBA Multi framework is not arm64"
   core_build_info="$(xcrun vtool -show-build "$core_binary")" ||
     fail "could not inspect the mGBA Multi framework platform metadata"
@@ -73,7 +73,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
     "$app_path/Info.plist")"
   app_binary="$app_path/$executable_name"
   [ -f "$app_binary" ] || fail "app executable is missing"
-  xcrun lipo -verify_arch arm64 "$app_binary" >/dev/null 2>&1 ||
+  xcrun lipo "$app_binary" -verify_arch arm64 >/dev/null 2>&1 ||
     fail "RetroArchTV executable is not arm64"
   app_build_info="$(xcrun vtool -show-build "$app_binary")" ||
     fail "could not inspect the RetroArchTV platform metadata"
