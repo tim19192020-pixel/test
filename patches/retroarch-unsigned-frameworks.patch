@@ -1,8 +1,8 @@
 diff --git a/pkg/apple/make-frameworks.sh b/pkg/apple/make-frameworks.sh
-index e3d4a4ca42600885c51b0df8126f91acfe561434..5d668a5395f88cbd3dbc34f15772e1a5ce563b2d 100755
+index e3d4a4c..2cf5b8e 100755
 --- a/pkg/apple/make-frameworks.sh
 +++ b/pkg/apple/make-frameworks.sh
-@@ -7,6 +7,12 @@ if [ "${CODE_SIGN_IDENTITY_FOR_ITEMS}" = "" ] ; then
+@@ -7,9 +7,28 @@ if [ "${CODE_SIGN_IDENTITY_FOR_ITEMS}" = "" ] ; then
      CODE_SIGN_IDENTITY_FOR_ITEMS="${CODE_SIGN_IDENTITY}"
  fi
  
@@ -15,3 +15,19 @@ index e3d4a4ca42600885c51b0df8126f91acfe561434..5d668a5395f88cbd3dbc34f15772e1a5
  echo "Identity:"
  echo "${CODE_SIGN_IDENTITY_FOR_ITEMS}"
  
++# Xcode validates an embedded extension against the parent app even when
++# automatic signing is disabled. Sign the already-built tvOS extension with
++# the same ad-hoc identity before the app target's copy phase embeds it.
++if [ "${PLATFORM_FAMILY_NAME}" = "tvOS" -a -n "${BUILT_PRODUCTS_DIR}" ] ; then
++    for appex in "${BUILT_PRODUCTS_DIR}"/*.appex ; do
++        if [ ! -d "${appex}" ] ; then
++            continue
++        fi
++        echo "signing $(basename "${appex}")"
++        codesign --force --verbose --sign "${CODE_SIGN_IDENTITY_FOR_ITEMS}" "${appex}"
++    done
++fi
++
+ if [ "$PLATFORM_FAMILY_NAME" = "tvOS" ] ; then
+     BASE_DIR="tvOS"
+     SUFFIX="_tvos"
