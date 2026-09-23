@@ -2,6 +2,14 @@ name: Build unsigned Apple TV IPA
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-tvos-ipa.yml
+      - scripts/**
+      - patches/**
+      - versions.env
 
 permissions:
   contents: read
