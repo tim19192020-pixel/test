@@ -45,13 +45,19 @@ app_path="${apps[0]}"
 
 core_framework="$app_path/Frameworks/mgba.multi.libretro.framework"
 core_binary="$core_framework/mgba.multi.libretro"
+stock_core_framework="$app_path/Frameworks/mgba.libretro.framework"
+stock_core_binary="$stock_core_framework/mgba.libretro"
 [ -d "$core_framework" ] || fail "mGBA Multi framework is missing"
 [ -f "$core_binary" ] || fail "mGBA Multi framework binary is missing"
+[ -d "$stock_core_framework" ] || fail "stock mGBA framework is missing"
+[ -f "$stock_core_binary" ] || fail "stock mGBA framework binary is missing"
 
 unzip -tq "$app_path/assets.zip" >/dev/null ||
   fail "embedded assets.zip failed its integrity check"
 unzip -l "$app_path/assets.zip" | grep -q 'info/mgba_multi_libretro.info' ||
   fail "mGBA Multi core metadata is missing"
+unzip -l "$app_path/assets.zip" | grep -q 'info/mgba_libretro.info' ||
+  fail "stock mGBA core metadata is missing"
 
 if find "$validation_tmp" -type f \
   \( -iname '*.gba' -o -iname '*.gb' -o -iname '*.gbc' -o -iname '*.sgb' \) |
@@ -72,6 +78,17 @@ if [ "$(uname -s)" = "Darwin" ]; then
     fail "could not inspect the mGBA Multi framework platform metadata"
   grep -qi 'platform.*TVOS' <<<"$core_build_info" ||
     fail "mGBA Multi framework is not a tvOS device binary"
+
+  stock_core_archs="$(xcrun lipo "$stock_core_binary" -archs)" ||
+    fail "could not inspect the stock mGBA framework architectures"
+  case " $stock_core_archs " in
+    *" arm64 "*) ;;
+    *) fail "stock mGBA framework is not arm64 (architectures: ${stock_core_archs:-none})" ;;
+  esac
+  stock_core_build_info="$(xcrun vtool -show-build "$stock_core_binary")" ||
+    fail "could not inspect the stock mGBA framework platform metadata"
+  grep -qi 'platform.*TVOS' <<<"$stock_core_build_info" ||
+    fail "stock mGBA framework is not a tvOS device binary"
 
   executable_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
     "$app_path/Info.plist")"

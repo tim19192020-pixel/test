@@ -92,10 +92,10 @@ index 834e9fd9ceb94a972941fb7b12494270702601e8..c4b63b8b1da29600e32662063aed79ae
  	message(STATUS "	Shared: ${BUILD_SHARED}")
 diff --git a/README_MULTI_LIBRETRO.md b/README_MULTI_LIBRETRO.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..be7fe87b9e776f2bacffddcf1619a6ae0fd837a8
+index 0000000000000000000000000000000000000000..65a5ce7b5833307daa74bfdc30ccb59d1ebb94ed
 --- /dev/null
 +++ b/README_MULTI_LIBRETRO.md
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,166 @@
 +# mGBA Multi libretro core
 +
 +This fork adds a separate `mGBA Multi` libretro target. It keeps the normal
@@ -121,6 +121,11 @@ index 0000000000000000000000000000000000000000..be7fe87b9e776f2bacffddcf1619a6ae
 +Link emulation is disabled by default so unlinked instances can run at full
 +speed and use independent speed multipliers. Enable it only for games that
 +need cable communication.
++
++Unlinked instances execute directly on RetroArch's core thread, matching the
++standard mGBA libretro execution path and avoiding a worker-thread scheduling
++round trip on every frame. Linked sessions retain worker threads because one
++emulated system may need to wait for another during cable communication.
 +
 +## Build
 +
@@ -179,8 +184,9 @@ index 0000000000000000000000000000000000000000..be7fe87b9e776f2bacffddcf1619a6ae
 +   enabled.
 +4. Set **Player 1 speed target**, **Player 2 speed target**, and **Player 3
 +   speed target** as needed.
-+5. Restart or reload the content after changing the instance count or link
-+   setting. Speed changes apply immediately.
++5. Use **Close Content**, then load the content again after changing the
++   instance count or link setting. RetroArch's **Restart** command only resets
++   the already-running instances. Speed changes apply immediately.
 +6. Assign controllers to RetroArch ports 1 through 3.
 +
 +Press **R2** on a player's controller to toggle only that player between 1x
@@ -216,13 +222,13 @@ index 0000000000000000000000000000000000000000..be7fe87b9e776f2bacffddcf1619a6ae
 +into the normal frontend time window. Link cable sessions force all players to
 +1x because linked systems must share a timeline.
 +
-+For unlinked play, extra frames are scheduled round-robin so one sped-up player
-+does not stall the others. All players finish on a shared frame barrier before
-+video, audio, and periodic saves are delivered. This prevents earlier players
-+from running ahead and accumulating audio or scheduling debt during long
-+sessions. Save snapshots use that existing barrier rather than interrupting
-+the emulation threads. The compositor clears its widescreen padding only when
-+the layout changes, and the common 1x audio path avoids resampling work.
++For unlinked play, all instances run directly and extra frames are scheduled
++round-robin. This removes the per-frame worker-thread waits used by earlier
++versions and keeps normal 1x execution on the same path as the standard mGBA
++libretro core. Video, audio, and periodic saves are collected only after every
++active instance reaches its frame boundary, so one player cannot accumulate
++timing or audio debt. The compositor clears widescreen padding only when the
++layout changes, and the common 1x audio path avoids resampling work.
 +
 +## Save files
 +
@@ -251,7 +257,7 @@ index 0000000000000000000000000000000000000000..be7fe87b9e776f2bacffddcf1619a6ae
 +- Link compatibility still depends on the games themselves. For trading or
 +  multiplayer, load ROMs that implement mutually compatible link protocols.
 +- The instance count and link topology are fixed for a content session and
-+  take effect after content restart.
++  take effect after content is closed and loaded again.
 +- Individual speed controls and R2 toggles are held at 1x while link emulation
 +  is active.
 +
@@ -389,10 +395,10 @@ index 8450f0d25d4b8e933b56370d01ba050f0a7f1405..60e35e1e82364a82fbd9b67e11b84d29
  				core->videoLogger = &gbacore->threadProxy.d;
 diff --git a/src/platform/libretro/libretro_multi.c b/src/platform/libretro/libretro_multi.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..ba98ce20fb2bd76505e81f537554cc508fa10155
+index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c299568719
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi.c
-@@ -0,0 +1,1978 @@
+@@ -0,0 +1,1984 @@
 +/* Copyright (c) 2013-2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -472,7 +478,7 @@ index 0000000000000000000000000000000000000000..ba98ce20fb2bd76505e81f537554cc50
 +#define STATE_SLOT_SIZE (1024 * 1024)
 +#define STATE_SLOT_PAYLOAD (STATE_SLOT_SIZE - sizeof(uint64_t))
 +#define MULTI_STATE_VERSION 1
-+#define MULTI_FRONTEND_VERSION "0.3.2"
++#define MULTI_FRONTEND_VERSION "0.3.3"
 +#define MULTI_SUBSYSTEM_2 0x4D474202U
 +#define MULTI_SUBSYSTEM_3 0x4D474203U
 +
@@ -1451,19 +1457,36 @@ index 0000000000000000000000000000000000000000..ba98ce20fb2bd76505e81f537554cc50
 +			return false;
 +		}
 +	}
-+	for (i = 0; i < instanceCount; ++i) {
-+		if (!mCoreThreadPrepare(&instances[i].thread)) {
-+			_frontendLog(RETRO_LOG_ERROR, "player %u emulation thread failed to prepare", i + 1);
-+			return false;
-+		}
-+		instances[i].threadPrepared = true;
-+	}
 +	if (!_setupLink()) {
 +		_frontendLog(RETRO_LOG_ERROR, "link cable setup failed");
 +		return false;
 +	}
++	/* Unlinked cores run directly on RetroArch's execution thread. Besides
++	 * avoiding a condition-variable round trip for every frame, this keeps
++	 * normal 1x play on the same path as the standard mGBA libretro core.
++	 * Link emulation can block one core while another responds, so linked
++	 * sessions still require one worker thread per instance. */
++	if (linkActive) {
++		for (i = 0; i < instanceCount; ++i) {
++			if (!mCoreThreadPrepare(&instances[i].thread)) {
++				_frontendLog(RETRO_LOG_ERROR, "player %u emulation thread failed to prepare", i + 1);
++				return false;
++			}
++			instances[i].threadPrepared = true;
++		}
++	}
 +	_updateLinkSpeedWarning();
 +	deferredSetup = false;
++	char messageText[96];
++	snprintf(messageText, sizeof(messageText), "mGBA Multi 0.3.3: %u instance%s, %s mode",
++	         instanceCount, instanceCount == 1 ? "" : "s",
++	         linkActive ? "threaded link" : "direct unlinked");
++	struct retro_message message = {
++		messageText,
++		240,
++	};
++	environCallback(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
++	_frontendLog(RETRO_LOG_INFO, "%s", messageText);
 +	return true;
 +}
 +
@@ -1473,6 +1496,9 @@ index 0000000000000000000000000000000000000000..ba98ce20fb2bd76505e81f537554cc50
 +	}
 +	if (!_finishDeferredSetup()) {
 +		return false;
++	}
++	if (!linkActive) {
++		return true;
 +	}
 +	unsigned i;
 +	for (i = 0; i < instanceCount; ++i) {
@@ -1935,7 +1961,7 @@ index 0000000000000000000000000000000000000000..ba98ce20fb2bd76505e81f537554cc50
 +		return;
 +	}
 +	inputPollCallback();
-+	if (!threadsStarted) {
++	if (deferredSetup || (linkActive && !threadsStarted)) {
 +		_setInputs(false);
 +		if (!_startThreads()) {
 +			videoCallback(NULL, 0, 0, 0);
@@ -1952,7 +1978,6 @@ index 0000000000000000000000000000000000000000..ba98ce20fb2bd76505e81f537554cc50
 +	struct MultiLayout layout;
 +	bool validLayout = _prepareComposite(&layout);
 +	unsigned frameSteps[MULTI_MAX_INSTANCES] = { 1, 1, 1 };
-+	bool heldFrames[MULTI_MAX_INSTANCES] = { false, false, false };
 +	unsigned i;
 +	for (i = 0; i < instanceCount; ++i) {
 +		frameSteps[i] = _scheduleSpeed(i);
@@ -1978,25 +2003,11 @@ index 0000000000000000000000000000000000000000..ba98ce20fb2bd76505e81f537554cc50
 +		}
 +		unsigned step;
 +		for (step = 0; step < maxSteps; ++step) {
-+			/* Keep each player's final frame at one shared barrier. Releasing a
-+			 * final frame early lets that thread enter the next frame while the
-+			 * remaining players are still being collected. */
 +			for (i = 0; i < instanceCount; ++i) {
 +				if (frameSteps[i] > step) {
-+					mCoreSyncWaitFrameStart(&instances[i].thread.impl->sync);
-+				}
-+			}
-+			for (i = 0; i < instanceCount; ++i) {
-+				if (frameSteps[i] > step && validLayout && step + 1 == frameSteps[i]) {
-+					_copyInstanceVideo(i, &layout);
-+				}
-+			}
-+			for (i = 0; i < instanceCount; ++i) {
-+				if (frameSteps[i] > step) {
-+					if (step + 1 == frameSteps[i]) {
-+						heldFrames[i] = true;
-+					} else {
-+						mCoreSyncWaitFrameEnd(&instances[i].thread.impl->sync);
++					instances[i].core->runFrame(instances[i].core);
++					if (validLayout && step + 1 == frameSteps[i]) {
++						_copyInstanceVideo(i, &layout);
 +					}
 +				}
 +			}
@@ -2008,16 +2019,9 @@ index 0000000000000000000000000000000000000000..ba98ce20fb2bd76505e81f537554cc50
 +		videoCallback(NULL, 0, 0, 0);
 +	}
 +	_mixAudio(frameSteps);
-+	/* Unlinked final frames are still held here, so save memory is stable
-+	 * without interrupting and desynchronizing the emulation threads. */
-+	_periodicSave(!linkActive);
-+	if (!linkActive) {
-+		for (i = 0; i < instanceCount; ++i) {
-+			if (heldFrames[i]) {
-+				mCoreSyncWaitFrameEnd(&instances[i].thread.impl->sync);
-+			}
-+		}
-+	}
++	/* Direct unlinked execution is already stopped at a frame boundary, so
++	 * save snapshots need neither locks nor per-core thread interruptions. */
++	_periodicSave(!threadsStarted);
 +}
 +
 +void retro_reset(void) {
@@ -2208,7 +2212,9 @@ index 0000000000000000000000000000000000000000..ba98ce20fb2bd76505e81f537554cc50
 +	size_t outputFrames = SIZE_MAX;
 +	unsigned i;
 +	for (i = 0; i < instanceCount; ++i) {
-+		mCoreSyncLockAudio(&instances[i].thread.impl->sync);
++		if (threadsStarted) {
++			mCoreSyncLockAudio(&instances[i].thread.impl->sync);
++		}
 +		available[i] = mAudioBufferAvailable(instances[i].core->getAudioBuffer(instances[i].core));
 +		size_t normalizedFrames = available[i] / frameSteps[i];
 +		if (normalizedFrames < outputFrames) {
@@ -2221,7 +2227,9 @@ index 0000000000000000000000000000000000000000..ba98ce20fb2bd76505e81f537554cc50
 +			if (!linkActive) {
 +				mAudioBufferRead(instances[i].core->getAudioBuffer(instances[i].core), NULL, available[i]);
 +			}
-+			mCoreSyncConsumeAudio(&instances[i].thread.impl->sync);
++			if (threadsStarted) {
++				mCoreSyncConsumeAudio(&instances[i].thread.impl->sync);
++			}
 +		}
 +		return;
 +	}
@@ -2249,7 +2257,9 @@ index 0000000000000000000000000000000000000000..ba98ce20fb2bd76505e81f537554cc50
 +			if (!linkActive) {
 +				mAudioBufferRead(instances[i].core->getAudioBuffer(instances[i].core), NULL, available[i]);
 +			}
-+			mCoreSyncConsumeAudio(&instances[i].thread.impl->sync);
++			if (threadsStarted) {
++				mCoreSyncConsumeAudio(&instances[i].thread.impl->sync);
++			}
 +		}
 +		return;
 +	}
@@ -2257,7 +2267,9 @@ index 0000000000000000000000000000000000000000..ba98ce20fb2bd76505e81f537554cc50
 +	for (i = 0; i < instanceCount; ++i) {
 +		size_t bufferedFrames = linkActive ? framesToRead[i] : available[i];
 +		mAudioBufferRead(instances[i].core->getAudioBuffer(instances[i].core), instances[i].audio, bufferedFrames);
-+		mCoreSyncConsumeAudio(&instances[i].thread.impl->sync);
++		if (threadsStarted) {
++			mCoreSyncConsumeAudio(&instances[i].thread.impl->sync);
++		}
 +	}
 +	size_t sourceOffsets[MULTI_MAX_INSTANCES] = { 0 };
 +	if (!linkActive) {
@@ -2373,7 +2385,7 @@ index 0000000000000000000000000000000000000000..ba98ce20fb2bd76505e81f537554cc50
 +}
 diff --git a/src/platform/libretro/mgba_multi_libretro.info b/src/platform/libretro/mgba_multi_libretro.info
 new file mode 100644
-index 0000000000000000000000000000000000000000..feec0e209808c87e187e09c50619a2ae352c207b
+index 0000000000000000000000000000000000000000..1fe5bc073f24e69ce3947a7b97fb12f6c9e3ec91
 --- /dev/null
 +++ b/src/platform/libretro/mgba_multi_libretro.info
 @@ -0,0 +1,13 @@
@@ -2388,5 +2400,5 @@ index 0000000000000000000000000000000000000000..feec0e209808c87e187e09c50619a2ae
 +database = "Nintendo - Game Boy Advance|Nintendo - Game Boy Color|Nintendo - Game Boy"
 +license = "MPLv2"
 +permissions = ""
-+display_version = "0.11-dev-multi.0.3.2"
++display_version = "0.11-dev-multi.0.3.3"
 +supports_no_game = "false"

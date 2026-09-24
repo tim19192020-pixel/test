@@ -8,7 +8,8 @@ fail() {
 
 show_help() {
   cat <<'EOF'
-Build RetroArchTV with the mGBA Multi core and package an unsigned IPA.
+Build RetroArchTV with mGBA Multi and a stock mGBA control core, then package
+an unsigned IPA.
 
 Usage:
   ./scripts/build-unsigned-ipa.sh [--prepare-only]
@@ -195,7 +196,7 @@ cmake -S "$mgba_dir" -B "$core_build" -G Xcode \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$tvos_target" \
   -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
   -DBUILD_LIBRETRO_MULTI=ON \
-  -DBUILD_LIBRETRO=OFF \
+  -DBUILD_LIBRETRO=ON \
   -DBUILD_QT=OFF \
   -DBUILD_SDL=OFF \
   -DBUILD_GL=OFF \
@@ -216,33 +217,53 @@ cmake -S "$mgba_dir" -B "$core_build" -G Xcode \
   -DUSE_EDITLINE=OFF
 
 cmake --build "$core_build" --config Release \
-  --target mgba_multi_libretro --parallel
+  --target mgba_multi_libretro mgba_libretro --parallel
 
-core_dylibs=()
+multi_core_dylibs=()
 while IFS= read -r core_candidate; do
-  core_dylibs+=("$core_candidate")
+  multi_core_dylibs+=("$core_candidate")
 done < <(find "$core_build" -type f -name mgba_multi_libretro.dylib -print)
 
-[ "${#core_dylibs[@]}" -eq 1 ] ||
-  fail "expected exactly one mGBA Multi tvOS dylib"
-core_dylib="${core_dylibs[0]}"
+stock_core_dylibs=()
+while IFS= read -r core_candidate; do
+  stock_core_dylibs+=("$core_candidate")
+done < <(find "$core_build" -type f -name mgba_libretro.dylib -print)
 
-core_archs="$(xcrun lipo "$core_dylib" -archs)" ||
-  fail "could not inspect the custom core architectures"
-case " $core_archs " in
-  *" arm64 "*) ;;
-  *) fail "custom core is not an arm64 binary (architectures: ${core_archs:-none})" ;;
-esac
-core_build_info="$(xcrun vtool -show-build "$core_dylib")" ||
-  fail "could not inspect the custom core platform metadata"
-grep -qi 'platform.*TVOS' <<<"$core_build_info" ||
-  fail "custom core is not marked for the tvOS device platform"
+[ "${#multi_core_dylibs[@]}" -eq 1 ] ||
+  fail "expected exactly one mGBA Multi tvOS dylib"
+[ "${#stock_core_dylibs[@]}" -eq 1 ] ||
+  fail "expected exactly one stock mGBA tvOS dylib"
+multi_core_dylib="${multi_core_dylibs[0]}"
+stock_core_dylib="${stock_core_dylibs[0]}"
+
+validate_core_dylib() {
+  local core_dylib="$1"
+  local core_label="$2"
+  local core_archs
+  local core_build_info
+
+  core_archs="$(xcrun lipo "$core_dylib" -archs)" ||
+    fail "could not inspect the $core_label architectures"
+  case " $core_archs " in
+    *" arm64 "*) ;;
+    *) fail "$core_label is not an arm64 binary (architectures: ${core_archs:-none})" ;;
+  esac
+  core_build_info="$(xcrun vtool -show-build "$core_dylib")" ||
+    fail "could not inspect the $core_label platform metadata"
+  grep -qi 'platform.*TVOS' <<<"$core_build_info" ||
+    fail "$core_label is not marked for the tvOS device platform"
+}
+
+validate_core_dylib "$multi_core_dylib" "mGBA Multi core"
+validate_core_dylib "$stock_core_dylib" "stock mGBA core"
 
 module_dir="$retroarch_dir/pkg/apple/tvOS/modules"
 mkdir -p "$module_dir"
-module_dylib="$module_dir/mgba_multi_libretro_tvos.dylib"
-rm -f -- "$module_dylib"
-cp "$core_dylib" "$module_dylib"
+multi_module_dylib="$module_dir/mgba_multi_libretro_tvos.dylib"
+stock_module_dylib="$module_dir/mgba_libretro_tvos.dylib"
+rm -f -- "$multi_module_dylib" "$stock_module_dylib"
+cp "$multi_core_dylib" "$multi_module_dylib"
+cp "$stock_core_dylib" "$stock_module_dylib"
 
 (
   cd "$retroarch_dir/pkg/apple"
@@ -277,13 +298,18 @@ shopt -u nullglob
   fail "expected exactly one RetroArchTV app product"
 app_path="${apps[0]}"
 
-core_framework="$app_path/Frameworks/mgba.multi.libretro.framework/mgba.multi.libretro"
-[ -f "$core_framework" ] ||
+multi_core_framework="$app_path/Frameworks/mgba.multi.libretro.framework/mgba.multi.libretro"
+stock_core_framework="$app_path/Frameworks/mgba.libretro.framework/mgba.libretro"
+[ -f "$multi_core_framework" ] ||
   fail "mGBA Multi framework is missing from the app bundle"
+[ -f "$stock_core_framework" ] ||
+  fail "stock mGBA framework is missing from the app bundle"
 [ -f "$app_path/assets.zip" ] ||
   fail "assets.zip is missing from the app bundle"
 unzip -l "$app_path/assets.zip" | grep -q 'info/mgba_multi_libretro.info' ||
   fail "mGBA Multi metadata is missing from the app bundle"
+unzip -l "$app_path/assets.zip" | grep -q 'info/mgba_libretro.info' ||
+  fail "stock mGBA metadata is missing from the app bundle"
 
 mkdir -p "$staging_dir/Payload"
 ditto "$app_path" "$staging_dir/Payload/RetroArchTV.app"
@@ -305,6 +331,7 @@ rm -f -- "$ipa_path" "$dist_dir/SHA256SUMS.txt" "$dist_dir/BUILD-MANIFEST.txt"
   printf 'mgba_patch_sha256=%s\n' \
     "$(shasum -a 256 "$kit_root/patches/mgba-multi.patch" | awk '{print $1}')"
   printf 'custom_core_version=%s\n' "$CUSTOM_CORE_VERSION"
+  printf 'stock_control_core=true\n'
   printf 'bundle_id=%s\n' "$bundle_id"
   printf 'tvos_deployment_target=%s\n' "$tvos_target"
   printf 'tvos_sdk=%s\n' "$(xcrun --sdk appletvos --show-sdk-version)"

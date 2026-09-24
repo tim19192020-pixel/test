@@ -1,14 +1,14 @@
 # RetroArchTV + mGBA Multi build kit
 
 This kit builds an unsigned, device-only Apple TV IPA containing RetroArch
-1.22.2 and the custom mGBA Multi libretro core. The core renders one, two, or
-three emulators in a stable widescreen layout, supports independent per-player
-speed targets with controller toggles, keeps independent save files, and can
-connect compatible games through local emulated link support.
+1.22.2, the custom mGBA Multi libretro core, and the standard mGBA libretro
+core as a single-instance performance control. mGBA Multi renders one, two,
+or three emulators in a stable widescreen layout, supports independent
+per-player speed targets with controller toggles, keeps independent save
+files, and can connect compatible games through local emulated link support.
 
-The source is fully pinned and the resulting IPA contains only the custom mGBA
-Multi core. No games, BIOS files, certificates, provisioning profiles, or
-precompiled app are included.
+The source is fully pinned. No games, BIOS files, certificates, provisioning
+profiles, or precompiled app are included.
 
 ## Fastest route: GitHub Actions
 
@@ -41,13 +41,13 @@ chmod +x scripts/*.sh
 The result is written to:
 
 ~~~text
-dist/RetroArchTV-mGBA-Multi-1.22.2-core-0.3.2-unsigned.ipa
+dist/RetroArchTV-mGBA-Multi-1.22.2-core-0.3.3-unsigned.ipa
 ~~~
 
 The script first validates the source revisions and patches, builds the custom
-core for arm64 tvOS, embeds it as a framework in RetroArchTV, adds the custom
-core metadata to `assets.zip`, packages the app as an IPA, and validates the
-archive and Mach-O platform markers.
+and stock cores for arm64 tvOS, embeds both as frameworks in RetroArchTV, adds
+the custom core metadata to `assets.zip`, packages the app as an IPA, and
+validates the archive and Mach-O platform markers.
 
 To fetch and patch the sources without invoking Xcode:
 
@@ -86,8 +86,9 @@ TVOS_DEPLOYMENT_TARGET=15.0 ./scripts/build-unsigned-ipa.sh
 6. Set **Local link cable** on or off.
 7. Set the independent **Player 1/2/3 speed target** options from 1x through
    3x in 0.25x steps.
-8. Close and reload the content after changing the instance count or link
-   option. Speed changes apply immediately.
+8. Use **Close Content**, then load it again after changing the instance count
+   or link option. RetroArch's **Restart** command only resets the existing
+   instances. Speed changes apply immediately.
 9. Assign controllers to RetroArch input ports 1 through 3.
 
 Press **R2** on a player's controller to toggle only that player between 1x
@@ -128,10 +129,10 @@ individual screen is stretched or cropped.
   protocols.
 - Link is disabled by default. While it is enabled, all individual speed
   controls and R2 toggles are held at 1x so linked systems remain synchronized.
-- Unlinked instances meet at a shared final-frame barrier before video, audio,
-  and periodic save snapshots are collected. Audio queues are drained at that
-  boundary and unlinked saves no longer interrupt each emulation thread. This
-  prevents timing and audio debt from accumulating during long sessions.
+- Unlinked instances run directly on RetroArch's core thread, matching the
+  standard mGBA execution path and removing a worker-thread scheduling round
+  trip from every emulated frame. Linked sessions retain worker threads because
+  one emulated system may need to wait for another during cable communication.
 - Extra speed frames remain interleaved across players. Video padding is only
   cleared when the layout changes, and 1x audio uses a no-resampling fast path
   to reduce CPU overhead during three-player sessions.
@@ -142,7 +143,7 @@ individual screen is stretched or cropped.
 | --- | --- |
 | RetroArch | 1.22.2 / `69a4f0ea1e8aaf442ae4858f2e7f2b31a1776576` |
 | mGBA base | `3a5bc24629867576b0fb576a5d5a21d3b3d6b576` |
-| mGBA Multi patch | core version 0.3.2 |
+| mGBA Multi patch | core version 0.3.3 |
 | tvOS architecture | arm64 device |
 
 See [LICENSES.md](LICENSES.md) for licensing and source obligations.
@@ -165,3 +166,9 @@ See [LICENSES.md](LICENSES.md) for licensing and source obligations.
   confirm that the controller is assigned to the intended RetroArch port.
 - **Link does not start:** enable Local link cable, use the same hardware
   family, load link-compatible games, and reload content.
+- **Gameplay is still slow:** first disable RetroArch run-ahead, preemptive
+  frames, and rewind. Then load the same game with **Nintendo - Game Boy
+  Advance / Color (mGBA)**. If the standard core is also slow, the bottleneck
+  is outside the multi-instance wrapper. If standard mGBA and one-instance
+  mGBA Multi are full speed but three instances are not, the remaining limit is
+  the Apple TV's aggregate CPU budget.
