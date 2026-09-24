@@ -85,7 +85,7 @@ index 834e9fd..5136863 100644
  	message(STATUS "	Shared: ${BUILD_SHARED}")
 diff --git a/README_MULTI_LIBRETRO.md b/README_MULTI_LIBRETRO.md
 new file mode 100644
-index 0000000..31ef548
+index 0000000..ddea6a1
 --- /dev/null
 +++ b/README_MULTI_LIBRETRO.md
 @@ -0,0 +1,139 @@
@@ -108,7 +108,7 @@ index 0000000..31ef548
 +  **Load Content** duplicates the selected ROM for the configured number of
 +  instances.
 +
-+Version 0.4.0 removes link-cable emulation and all worker-thread paths. Every
++Version 0.4.1 removes link-cable emulation and all worker-thread paths. Every
 +instance executes directly on RetroArch's core thread, and the target is built
 +with the same `DISABLE_THREADING` configuration as the standard mGBA libretro
 +core.
@@ -230,7 +230,7 @@ index 0000000..31ef548
 +This fork retains mGBA's Mozilla Public License 2.0 licensing.
 diff --git a/src/platform/libretro/libretro_multi.c b/src/platform/libretro/libretro_multi.c
 new file mode 100644
-index 0000000..25dece2
+index 0000000..db5db32
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi.c
 @@ -0,0 +1,1542 @@
@@ -304,7 +304,7 @@ index 0000000..25dece2
 +#define STATE_SLOT_SIZE (1024 * 1024)
 +#define STATE_SLOT_PAYLOAD (STATE_SLOT_SIZE - sizeof(uint64_t))
 +#define MULTI_STATE_VERSION 1
-+#define MULTI_FRONTEND_VERSION "0.4.0"
++#define MULTI_FRONTEND_VERSION "0.4.1"
 +#define MULTI_SUBSYSTEM_2 0x4D474202U
 +#define MULTI_SUBSYSTEM_3 0x4D474203U
 +
@@ -984,7 +984,7 @@ index 0000000..25dece2
 +	}
 +	deferredSetup = false;
 +	char messageText[96];
-+	snprintf(messageText, sizeof(messageText), "mGBA Multi 0.4.0: %u instance%s, direct single-thread mode",
++	snprintf(messageText, sizeof(messageText), "mGBA Multi 0.4.1: %u instance%s, direct single-thread mode",
 +	         instanceCount, instanceCount == 1 ? "" : "s");
 +	struct retro_message message = {
 +		messageText,
@@ -1778,7 +1778,7 @@ index 0000000..25dece2
 +}
 diff --git a/src/platform/libretro/mgba_multi_libretro.info b/src/platform/libretro/mgba_multi_libretro.info
 new file mode 100644
-index 0000000..2cdb396
+index 0000000..c0a8967
 --- /dev/null
 +++ b/src/platform/libretro/mgba_multi_libretro.info
 @@ -0,0 +1,13 @@
@@ -1793,5 +1793,5 @@ index 0000000..2cdb396
 +database = "Nintendo - Game Boy Advance|Nintendo - Game Boy Color|Nintendo - Game Boy"
 +license = "MPLv2"
 +permissions = ""
-+display_version = "0.11-dev-multi.0.4.0"
++display_version = "0.11-dev-multi.0.4.1"
 +supports_no_game = "false"

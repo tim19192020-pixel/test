@@ -5,7 +5,7 @@ This kit builds an unsigned, device-only Apple TV IPA containing RetroArch
 core as a single-instance performance control. mGBA Multi renders one, two,
 or three emulators in a stable widescreen layout, supports independent
 per-player speed targets with controller toggles, and keeps independent save
-files. Version 0.4.0 removes link-cable emulation and all worker-thread paths.
+files. Version 0.4.1 removes link-cable emulation and all worker-thread paths.
 
 The source is fully pinned. No games, BIOS files, certificates, provisioning
 profiles, or precompiled app are included.
@@ -41,7 +41,7 @@ chmod +x scripts/*.sh
 The result is written to:
 
 ~~~text
-dist/RetroArchTV-mGBA-Multi-1.22.2-core-0.4.0-unsigned.ipa
+dist/RetroArchTV-mGBA-Multi-1.22.2-core-0.4.1-unsigned.ipa
 ~~~
 
 The script first validates the source revisions and patches, builds the custom
@@ -61,7 +61,10 @@ The output has no Apple distribution signature or provisioning profile.
 Before installation, sign the IPA with your own Apple developer identity/team
 using your normal tvOS sideloading workflow. The nested core framework is
 ad-hoc signed during packaging so a signing tool can replace all signatures
-consistently.
+consistently. The sideload package omits RetroArch's optional Top Shelf
+extension, which avoids requiring a second provisioning identity. It uses app
+build number 401 while retaining the same bundle identifier, so existing save
+data remains associated with the same app container.
 
 The default bundle identifier is `com.mgbamulti.RetroArchTV`. Override it
 when building if your signing setup requires a different App ID:
@@ -128,8 +131,9 @@ individual screen is stretched or cropped.
   carry window, so queued work cannot grow over time.
 - Extra speed frames remain interleaved across players. Video padding is only
   cleared when the layout changes, and 1x audio uses a no-resampling fast path.
-- Both cores are Release builds with link-time optimization enabled. The IPA
-  validator rejects the custom core if thread or link-cable symbols reappear.
+- Both cores are optimized Release builds with link-time optimization enabled.
+  The IPA validator rejects the custom core if thread or link-cable symbols
+  reappear and verifies the nested framework signatures.
 
 ## Pinned source
 
@@ -137,7 +141,7 @@ individual screen is stretched or cropped.
 | --- | --- |
 | RetroArch | 1.22.2 / `69a4f0ea1e8aaf442ae4858f2e7f2b31a1776576` |
 | mGBA base | `3a5bc24629867576b0fb576a5d5a21d3b3d6b576` |
-| mGBA Multi patch | core version 0.4.0 |
+| mGBA Multi patch | core version 0.4.1 |
 | tvOS architecture | arm64 device |
 
 See [LICENSES.md](LICENSES.md) for licensing and source obligations.

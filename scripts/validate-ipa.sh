@@ -14,6 +14,12 @@ fi
 ipa_path="$1"
 [ -f "$ipa_path" ] || fail "IPA does not exist: $ipa_path"
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+kit_root="$(cd "$script_dir/.." && pwd)"
+# shellcheck source=../versions.env
+source "$kit_root/versions.env"
+expected_app_build_number="${APP_BUILD_NUMBER:-$APP_BUILD_NUMBER_DEFAULT}"
+
 for command_name in unzip; do
   command -v "$command_name" >/dev/null 2>&1 ||
     fail "required command not found: $command_name"
@@ -51,14 +57,20 @@ stock_core_binary="$stock_core_framework/mgba.libretro"
 [ -f "$core_binary" ] || fail "mGBA Multi framework binary is missing"
 [ -d "$stock_core_framework" ] || fail "stock mGBA framework is missing"
 [ -f "$stock_core_binary" ] || fail "stock mGBA framework binary is missing"
+[ -x "$core_binary" ] || fail "mGBA Multi framework binary is not executable"
+[ -x "$stock_core_binary" ] || fail "stock mGBA framework binary is not executable"
+
+if find "$app_path" -type d -name '*.appex' -print -quit | grep -q .; then
+  fail "sideload-compatible IPA must not contain an app extension"
+fi
 
 unzip -tq "$app_path/assets.zip" >/dev/null ||
   fail "embedded assets.zip failed its integrity check"
 unzip -l "$app_path/assets.zip" | grep -q 'info/mgba_multi_libretro.info' ||
   fail "mGBA Multi core metadata is missing"
 unzip -p "$app_path/assets.zip" info/mgba_multi_libretro.info |
-  grep 'display_version = "0.11-dev-multi.0.4.0"' >/dev/null ||
-  fail "mGBA Multi 0.4.0 metadata is missing"
+  grep "display_version = \"0.11-dev-multi.$CUSTOM_CORE_VERSION\"" >/dev/null ||
+  fail "mGBA Multi $CUSTOM_CORE_VERSION metadata is missing"
 unzip -l "$app_path/assets.zip" | grep -q 'info/mgba_libretro.info' ||
   fail "stock mGBA core metadata is missing"
 
@@ -71,6 +83,8 @@ fi
 if [ "$(uname -s)" = "Darwin" ]; then
   command -v xcrun >/dev/null 2>&1 || fail "xcrun is unavailable"
   command -v strings >/dev/null 2>&1 || fail "strings is unavailable"
+  command -v codesign >/dev/null 2>&1 || fail "codesign is unavailable"
+  [ -x /usr/libexec/PlistBuddy ] || fail "PlistBuddy is unavailable"
 
   core_archs="$(xcrun lipo "$core_binary" -archs)" ||
     fail "could not inspect the mGBA Multi framework architectures"
@@ -106,6 +120,11 @@ if [ "$(uname -s)" = "Darwin" ]; then
     "$app_path/Info.plist")"
   app_binary="$app_path/$executable_name"
   [ -f "$app_binary" ] || fail "app executable is missing"
+  [ -x "$app_binary" ] || fail "app executable bit is missing"
+  app_build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+    "$app_path/Info.plist")"
+  [ "$app_build_number" = "$expected_app_build_number" ] ||
+    fail "unexpected CFBundleVersion: $app_build_number"
   app_archs="$(xcrun lipo "$app_binary" -archs)" ||
     fail "could not inspect the RetroArchTV architectures"
   case " $app_archs " in
@@ -116,6 +135,11 @@ if [ "$(uname -s)" = "Darwin" ]; then
     fail "could not inspect the RetroArchTV platform metadata"
   grep -qi 'platform.*TVOS' <<<"$app_build_info" ||
     fail "RetroArchTV executable is not a tvOS device binary"
+
+  codesign --verify --strict "$core_framework" ||
+    fail "mGBA Multi framework ad-hoc signature is invalid"
+  codesign --verify --strict "$stock_core_framework" ||
+    fail "stock mGBA framework ad-hoc signature is invalid"
 fi
 
 printf 'IPA validation passed: %s\n' "$ipa_path"

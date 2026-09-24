@@ -24,6 +24,7 @@ Environment overrides:
   RETROARCH_SOURCE_DIR    Existing pinned RetroArch checkout.
   MGBA_SOURCE_DIR         Existing pinned or fully patched mGBA checkout.
   BUNDLE_ID               Unsigned app bundle identifier.
+  APP_BUILD_NUMBER        Numeric CFBundleVersion; default is 401.
   TVOS_DEPLOYMENT_TARGET  Minimum tvOS version; default is 13.0.
 EOF
 }
@@ -53,7 +54,12 @@ source "$kit_root/versions.env"
 build_root="${BUILD_ROOT:-$kit_root/.work}"
 dist_dir="${DIST_DIR:-$kit_root/dist}"
 bundle_id="${BUNDLE_ID:-$BUNDLE_ID_DEFAULT}"
+app_build_number="${APP_BUILD_NUMBER:-$APP_BUILD_NUMBER_DEFAULT}"
 tvos_target="${TVOS_DEPLOYMENT_TARGET:-$TVOS_DEPLOYMENT_TARGET_DEFAULT}"
+
+case "$app_build_number" in
+  ''|*[!0-9]*) fail "APP_BUILD_NUMBER must contain decimal digits only" ;;
+esac
 
 mkdir -p "$build_root" "$dist_dir"
 build_root="$(cd "$build_root" && pwd)"
@@ -170,6 +176,7 @@ for command_name in cmake xcodebuild xcrun codesign shasum ditto strings; do
 done
 xcrun --sdk appletvos --show-sdk-path >/dev/null 2>&1 ||
   fail "the Apple TV device SDK is not installed in the selected Xcode"
+[ -x /usr/libexec/PlistBuddy ] || fail "PlistBuddy is unavailable"
 
 reset_derived_dir() {
   local target="$1"
@@ -289,6 +296,8 @@ cp "$stock_core_dylib" "$stock_module_dylib"
     ONLY_ACTIVE_ARCH=NO \
     TVOS_DEPLOYMENT_TARGET="$tvos_target" \
     TVOS_BUNDLE_IDENTIFIER="$bundle_id" \
+    CURRENT_PROJECT_VERSION="$app_build_number" \
+    MARKETING_VERSION="$RETROARCH_VERSION" \
     CODE_SIGNING_ALLOWED=NO \
     CODE_SIGNING_REQUIRED=NO \
     CODE_SIGN_IDENTITY=- \
@@ -308,6 +317,25 @@ shopt -u nullglob
   fail "expected exactly one RetroArchTV app product"
 app_path="${apps[0]}"
 
+actual_build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+  "$app_path/Info.plist")" || fail "could not read the app build number"
+[ "$actual_build_number" = "$app_build_number" ] ||
+  fail "unexpected app build number: $actual_build_number"
+
+# A Top Shelf extension requires a second provisioning identity and gives
+# third-party sideloaders another nested executable to rewrite. It is not
+# needed by RetroArch itself, so the sideload package intentionally omits it.
+top_shelf_extension="$app_path/PlugIns/RetroArchTopShelfExtension.appex"
+case "$top_shelf_extension" in
+  "$derived_data"/*) ;;
+  *) fail "refusing to alter an extension outside DerivedData" ;;
+esac
+if [ -d "$top_shelf_extension" ]; then
+  rm -rf -- "$top_shelf_extension"
+fi
+rmdir "$app_path/PlugIns" 2>/dev/null || true
+[ ! -e "$top_shelf_extension" ] || fail "Top Shelf extension was not removed"
+
 multi_core_framework="$app_path/Frameworks/mgba.multi.libretro.framework/mgba.multi.libretro"
 stock_core_framework="$app_path/Frameworks/mgba.libretro.framework/mgba.libretro"
 [ -f "$multi_core_framework" ] ||
@@ -319,13 +347,13 @@ stock_core_framework="$app_path/Frameworks/mgba.libretro.framework/mgba.libretro
 unzip -l "$app_path/assets.zip" | grep -q 'info/mgba_multi_libretro.info' ||
   fail "mGBA Multi metadata is missing from the app bundle"
 unzip -p "$app_path/assets.zip" info/mgba_multi_libretro.info |
-  grep 'display_version = "0.11-dev-multi.0.4.0"' >/dev/null ||
-  fail "mGBA Multi 0.4.0 metadata is missing from the app bundle"
+  grep "display_version = \"0.11-dev-multi.$CUSTOM_CORE_VERSION\"" >/dev/null ||
+  fail "mGBA Multi $CUSTOM_CORE_VERSION metadata is missing from the app bundle"
 unzip -l "$app_path/assets.zip" | grep -q 'info/mgba_libretro.info' ||
   fail "stock mGBA metadata is missing from the app bundle"
 
 mkdir -p "$staging_dir/Payload"
-ditto "$app_path" "$staging_dir/Payload/RetroArchTV.app"
+COPYFILE_DISABLE=1 ditto --norsrc "$app_path" "$staging_dir/Payload/RetroArchTV.app"
 
 ipa_name="RetroArchTV-mGBA-Multi-$RETROARCH_VERSION-core-$CUSTOM_CORE_VERSION-unsigned.ipa"
 ipa_path="$dist_dir/$ipa_name"
@@ -344,7 +372,11 @@ rm -f -- "$ipa_path" "$dist_dir/SHA256SUMS.txt" "$dist_dir/BUILD-MANIFEST.txt"
   printf 'mgba_patch_sha256=%s\n' \
     "$(shasum -a 256 "$kit_root/patches/mgba-multi.patch" | awk '{print $1}')"
   printf 'custom_core_version=%s\n' "$CUSTOM_CORE_VERSION"
+  printf 'app_build_number=%s\n' "$app_build_number"
   printf 'stock_control_core=true\n'
+  printf 'link_time_optimization=true\n'
+  printf 'top_shelf_extension=false\n'
+  printf 'sideload_compatibility=true\n'
   printf 'bundle_id=%s\n' "$bundle_id"
   printf 'tvos_deployment_target=%s\n' "$tvos_target"
   printf 'tvos_sdk=%s\n' "$(xcrun --sdk appletvos --show-sdk-version)"
@@ -356,7 +388,8 @@ rm -f -- "$ipa_path" "$dist_dir/SHA256SUMS.txt" "$dist_dir/BUILD-MANIFEST.txt"
   shasum -a 256 "$ipa_name" > SHA256SUMS.txt
 )
 
-"$kit_root/scripts/validate-ipa.sh" "$ipa_path"
+APP_BUILD_NUMBER="$app_build_number" \
+  "$kit_root/scripts/validate-ipa.sh" "$ipa_path"
 
 printf '\nBuild complete:\n%s\n' "$ipa_path"
 printf 'This IPA has no distribution signature; sign it with your own Apple ID/team before installation.\n'
