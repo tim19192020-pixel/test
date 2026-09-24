@@ -217,8 +217,13 @@ if [ "$(uname -s)" = "Darwin" ]; then
     mgba_multi_speed_p1 \
     mgba_multi_speed_p2 \
     mgba_multi_speed_p3 \
+    mgba_multi_dialogue_speed \
+    mgba_multi_dialogue_auto_advance \
     'Audio output; Player 1|Player 2|Player 3|Disabled' \
-    'Toggle Speed'; do
+    'FireRed dialogue speed (L2 toggle)' \
+    'FireRed dialogue auto-advance; Enabled|Disabled' \
+    'Toggle Speed' \
+    'Toggle FireRed Dialogue Assist'; do
     grep -F "$required_core_string" <<<"$core_strings" >/dev/null ||
       fail "mGBA Multi is missing required runtime feature: $required_core_string"
   done

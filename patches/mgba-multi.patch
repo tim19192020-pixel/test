@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 9d528e790ed3aabcfba77c0c3dedd9b80b6410fa..0193fe4cab0b04e3149fb74bb129befe0072ef98 100644
+index 9d528e7..c227628 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -69,6 +69,7 @@ if(NOT LIBMGBA_ONLY)
@@ -47,7 +47,7 @@ index 9d528e790ed3aabcfba77c0c3dedd9b80b6410fa..0193fe4cab0b04e3149fb74bb129befe
  		set(CMAKE_OSX_DEPLOYMENT_TARGET "10.6")
  	endif()
  	# Not supported until Xcode 9
-@@ -1025,11 +1036,39 @@ if(BUILD_PYTHON)
+@@ -1025,11 +1036,40 @@ if(BUILD_PYTHON)
  	add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/src/platform/python ${CMAKE_CURRENT_BINARY_DIR}/python)
  endif()
  
@@ -69,12 +69,13 @@ index 9d528e790ed3aabcfba77c0c3dedd9b80b6410fa..0193fe4cab0b04e3149fb74bb129befe
 +		set(RETRO_SRC
 +			${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro/libretro_multi.c
 +			${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro/libretro_multi_support.c
++			${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro/libretro_firered_dialogue.c
 +			${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro/libretro-audio.c
 +			${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro/libretro-vfs.c)
 +	else()
 +		set(LIBRETRO_TARGET ${BINARY_NAME}_libretro)
 +		file(GLOB RETRO_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro/*.c)
-+		list(FILTER RETRO_SRC EXCLUDE REGEX "/libretro_multi(_support)?\\.c$")
++		list(FILTER RETRO_SRC EXCLUDE REGEX "/libretro_(multi(_support)?|firered_dialogue)\\.c$")
 +	endif()
  	set(LIBRETRO_CORE_SRC ${CORE_SRC})
  	list(APPEND LIBRETRO_CORE_SRC ${VFS_SRC})
@@ -89,7 +90,7 @@ index 9d528e790ed3aabcfba77c0c3dedd9b80b6410fa..0193fe4cab0b04e3149fb74bb129befe
  	list(FILTER LIBRETRO_CORE_SRC EXCLUDE REGEX "/util/(audio-resampler|interpolator)\\.c$")
  	if(CMAKE_TRY_COMPILE_TARGET_TYPE STREQUAL "STATIC_LIBRARY" AND NOT APPLE)
  		# Link-based function probes always succeed under static try-compile,
-@@ -1086,33 +1125,37 @@ if(BUILD_LIBRETRO)
+@@ -1086,33 +1126,37 @@ if(BUILD_LIBRETRO)
  		list(APPEND LIBRETRO_EXTRA_DEFINES HAVE_NO_LANGEXTRA)
  	endif()
  	if(LIBRETRO_STATIC)
@@ -140,7 +141,7 @@ index 9d528e790ed3aabcfba77c0c3dedd9b80b6410fa..0193fe4cab0b04e3149fb74bb129befe
  	endif()
  endif()
  
-@@ -1467,6 +1510,7 @@ if(NOT QUIET AND NOT LIBMGBA_ONLY)
+@@ -1467,6 +1511,7 @@ if(NOT QUIET AND NOT LIBMGBA_ONLY)
  	message(STATUS "	Video test suite: ${BUILD_CINEMA}")
  	message(STATUS "Cores:")
  	message(STATUS "	Libretro core: ${BUILD_LIBRETRO}")
@@ -150,11 +151,11 @@ index 9d528e790ed3aabcfba77c0c3dedd9b80b6410fa..0193fe4cab0b04e3149fb74bb129befe
  	message(STATUS "	Shared: ${BUILD_SHARED}")
 diff --git a/README_MULTI_LIBRETRO.md b/README_MULTI_LIBRETRO.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..d86aec4a3f3d1ac947cce1c566ddbc89384e2e27
+index 0000000..e7079ed
 --- /dev/null
 +++ b/README_MULTI_LIBRETRO.md
-@@ -0,0 +1,123 @@
-+# mGBA Multi 0.2.0
+@@ -0,0 +1,167 @@
++# mGBA Multi 0.3.0
 +
 +This is a deliberately small, linkless libretro frontend built directly on
 +upstream mGBA. It runs one selected GBA ROM in one, two, or three independent
@@ -172,7 +173,7 @@ index 0000000000000000000000000000000000000000..d86aec4a3f3d1ac947cce1c566ddbc89
 +  has 128 KiB plus a canonical 16-byte RTC trailer, so changing the visible
 +  count never renames or shifts a player's save. The frontend mirrors mGBA's
 +  save-type-specific RTC location (8, 64, or 128 KiB) into that fixed trailer.
-+- Version 0.2.0 intentionally has no link cable, subsystems, savestates,
++- Version 0.3.0 intentionally has no link cable, subsystems, savestates,
 +  user-configurable frameskip, sensors, or background file writes.
 +- `Audio output` selects Player 1 (the default), Player 2, or Player 3, or
 +  disables audible output. Selecting a player that is not active produces
@@ -182,6 +183,35 @@ index 0000000000000000000000000000000000000000..d86aec4a3f3d1ac947cce1c566ddbc89
 +  that instance between 1.0x and its target. All players start at 1.0x whenever
 +  content is loaded.
 +
++## FireRed dialogue assist
++
++L2 on each player's controller independently toggles a conservative dialogue
++assist for that instance. `FireRed dialogue speed` selects an integer target
++from 5x through 20x (default 10x). `FireRed dialogue auto-advance` controls
++whether verified page and final waits receive a one-emulated-frame A press;
++every injected press is followed by a forced released frame before acceleration
++can resume. With auto-advance disabled, only verified text printing is sped up.
++
++The detector supports only exact, clean English (USA) Pokemon FireRed ROMs:
++
++- Version 1.0: SHA-1 `41cb23d8dccc8ebd7c649cd8fbb58eeace6e2fdc`
++- Version 1.1: SHA-1 `dd5945db9b930750cb39d00c84da8571feebf417`
++
++The ROM is hashed once at content load. Every other revision, translation,
++ROM hack, and patched image fails closed: L2 reports the feature unavailable,
++the detector does not inspect live game state, and no input is injected.
++
++For supported ROMs, acceleration requires the known overworld callback,
++ordinary field-message printer, and expected script wait to agree. The detector
++also proves that the complete nested return path after the text contains only
++message close/release operations and script termination. It therefore leaves
++story text with side effects or uncertain continuations at 1x. The detector
++blocks on battle startup, in-battle state (including trainer battles and wild
++Pokemon encounters), trainer- and scripted-encounter lead-ins, yes/no prompts,
++multichoice prompts, and every unknown state. It rechecks the state between
++every accelerated emulated frame and returns immediately to normal scheduling
++when any safety condition stops matching.
++
 +## Execution model
 +
 +One-instance mode uses the same direct `runFrame()` path as the stock core.
@@ -189,12 +219,14 @@ index 0000000000000000000000000000000000000000..d86aec4a3f3d1ac947cce1c566ddbc89
 +Players 2 and 3 each have one persistent owner pthread. The caller waits at a
 +fixed barrier before it reads video/audio memory, invokes a frontend callback,
 +or returns. At normal speed, a generation contains exactly one frame per
-+instance. Acceleration uses
-+an integer tenths accumulator and loops a bounded one to four frames inside the
-+same generation; it never dispatches extra jobs. Intermediate accelerated
-+frames skip only software rendering, while the final frame is always rendered.
-+There is no free-running producer, catch-up loop, or work queue that can grow
-+over time.
++instance. Manual acceleration uses an integer tenths accumulator and loops a
++bounded one to four frames inside the same generation. Dialogue assist uses the
++same synchronous owner lane with a hard maximum of 20 frames per generation;
++the selected multiplier is a target and remains limited by available hardware
++time. Neither mode dispatches extra jobs. Intermediate accelerated frames skip
++software rendering, with output rendered at the generation boundary. There is
++no free-running producer, catch-up loop, deferred input, or work queue that can
++grow over time.
 +
 +This differs intentionally from mGBA's `mCoreThread`, which is a continuously
 +running GUI-oriented controller with its own audio/video synchronization. It
@@ -220,6 +252,12 @@ index 0000000000000000000000000000000000000000..d86aec4a3f3d1ac947cce1c566ddbc89
 +is resampled by the exact configured speed ratio while the frontend cadence
 +remains unchanged. Every accelerated subframe is drained or cleared before the
 +next one, so the fixed native rings cannot accumulate data.
++
++Manual, dialogue, and normal-speed transitions are applied on the instance's
++owner lane. Converter/FIFO transition state is reset instead of preserving
++samples at the old ratio, and the one-frame press/release path runs at normal
++speed. Thus a dialogue boundary can produce a short bounded silence, but it
++cannot leave queued high-speed audio or retry debt behind.
 +
 +The output frame count uses an exact rational accumulator:
 +
@@ -267,6 +305,13 @@ index 0000000000000000000000000000000000000000..d86aec4a3f3d1ac947cce1c566ddbc89
 +  src/platform/libretro/libretro_multi_support.c \
 +  -o multi-audio-test
 +./multi-audio-test
++
++cc -std=c11 -Wall -Wextra -Werror \
++  -Isrc/platform/libretro \
++  tests/libretro_firered_dialogue_test.c \
++  src/platform/libretro/libretro_firered_dialogue.c \
++  -o firered-dialogue-test
++./firered-dialogue-test
 +```
 +
 +## Hardware acceptance
@@ -278,7 +323,7 @@ index 0000000000000000000000000000000000000000..d86aec4a3f3d1ac947cce1c566ddbc89
 +parallel execution lowers the multi-instance frame-time tail without thermal
 +collapse.
 diff --git a/src/platform/libretro/libretro-audio.c b/src/platform/libretro/libretro-audio.c
-index 28d7544cd6a6f724baadb52162c840423e60a615..62ae234fb4e85ae3b8724a1554076cfa7f632a36 100644
+index 28d7544..a5f1475 100644
 --- a/src/platform/libretro/libretro-audio.c
 +++ b/src/platform/libretro/libretro-audio.c
 @@ -7,6 +7,15 @@
@@ -314,8 +359,8 @@ index 28d7544cd6a6f724baadb52162c840423e60a615..62ae234fb4e85ae3b8724a1554076cfa
 +void audioConverterResetScaled(struct LibretroAudioConverter* conv, unsigned inputRate, unsigned speedTenths) {
 +	if (speedTenths < 10) {
 +		speedTenths = 10;
-+	} else if (speedTenths > 40) {
-+		speedTenths = 40;
++	} else if (speedTenths > 200) {
++		speedTenths = 200;
 +	}
 +
 +	/* Keep the normal-speed fast paths and their exact sample behavior. */
@@ -370,7 +415,7 @@ index 28d7544cd6a6f724baadb52162c840423e60a615..62ae234fb4e85ae3b8724a1554076cfa
  	}
  }
 diff --git a/src/platform/libretro/libretro-audio.h b/src/platform/libretro/libretro-audio.h
-index 02d2a229980fc3ce34b74d191935852b3caeb1d5..1c10e40905eca194b1ea33e78d8b8deceec9c66f 100644
+index 02d2a22..1c10e40 100644
 --- a/src/platform/libretro/libretro-audio.h
 +++ b/src/platform/libretro/libretro-audio.h
 @@ -16,7 +16,8 @@ enum LibretroAudioMode {
@@ -398,12 +443,550 @@ index 02d2a229980fc3ce34b74d191935852b3caeb1d5..1c10e40905eca194b1ea33e78d8b8dec
  size_t audioConverterProcess(struct LibretroAudioConverter* conv, const int16_t* in, size_t nFrames, int16_t* out);
  
  #endif
+diff --git a/src/platform/libretro/libretro_firered_dialogue.c b/src/platform/libretro/libretro_firered_dialogue.c
+new file mode 100644
+index 0000000..4e5e24e
+--- /dev/null
++++ b/src/platform/libretro/libretro_firered_dialogue.c
+@@ -0,0 +1,466 @@
++/* Copyright (c) 2026 mGBA contributors
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++#include "libretro_firered_dialogue.h"
++
++#include <string.h>
++
++#define FIRERED_EWRAM_BASE 0x02000000U
++#define FIRERED_IWRAM_BASE 0x03000000U
++#define FIRERED_ROM_BASE 0x08000000U
++
++#define FIRERED_TEXT_PRINTER_0 0x02020034U
++#define FIRERED_TEXT_PRINTER_ACTIVE_OFFSET 0x1BU
++#define FIRERED_TEXT_PRINTER_STATE_OFFSET 0x1CU
++#define FIRERED_MESSAGE_BOX_TYPE 0x0203709CU
++
++#define FIRERED_GLOBAL_CONTEXT_STATUS 0x03000EA8U
++#define FIRERED_GLOBAL_CONTEXT 0x03000EB0U
++#define FIRERED_CONTEXT_STACK_DEPTH_OFFSET 0U
++#define FIRERED_CONTEXT_MODE_OFFSET 1U
++#define FIRERED_CONTEXT_NATIVE_PTR_OFFSET 4U
++#define FIRERED_CONTEXT_SCRIPT_PTR_OFFSET 8U
++#define FIRERED_CONTEXT_STACK_OFFSET 12U
++#define FIRERED_CONTEXT_STACK_COUNT 20U
++#define FIRERED_MAIN 0x030030F0U
++#define FIRERED_MAIN_CALLBACK2_OFFSET 4U
++#define FIRERED_MAIN_IN_BATTLE_OFFSET 0x439U
++#define FIRERED_MAIN_IN_BATTLE_MASK 0x02U
++#define FIRERED_TASKS 0x03005090U
++#define FIRERED_TASK_COUNT 16U
++#define FIRERED_TASK_STRIDE 0x28U
++#define FIRERED_TASK_FUNC_OFFSET 0U
++#define FIRERED_TASK_ACTIVE_OFFSET 4U
++
++#define FIRERED_CONTEXT_RUNNING 0U
++#define FIRERED_SCRIPT_MODE_BYTECODE 1U
++#define FIRERED_SCRIPT_MODE_NATIVE 2U
++#define FIRERED_MESSAGE_BOX_HIDDEN 0U
++#define FIRERED_MESSAGE_BOX_NORMAL 2U
++#define FIRERED_CMD_END 0x02U
++#define FIRERED_CMD_RETURN 0x03U
++#define FIRERED_CMD_CLOSE_MESSAGE 0x68U
++#define FIRERED_CMD_RELEASE_ALL 0x6BU
++#define FIRERED_CMD_RELEASE 0x6CU
++#define FIRERED_CMD_WAIT_BUTTON_PRESS 0x6DU
++
++enum FireRedTerminalStage {
++	FIRERED_TERMINAL_NONE,
++	FIRERED_TERMINAL_MESSAGE,
++	FIRERED_TERMINAL_HIDDEN_NATIVE,
++	FIRERED_TERMINAL_BYTECODE,
++	FIRERED_TERMINAL_WAIT,
++};
++
++struct FireRedDialogueProfileData {
++	uint32_t callback2Overworld;
++	uint32_t taskDrawFieldMessageBox;
++	uint32_t isFieldMessageBoxHidden;
++	uint32_t waitForAorBPress;
++	uint32_t taskBattleStart;
++	uint32_t choiceTasks[3];
++	uint32_t trainerScriptStart;
++	uint32_t trainerScriptEnd;
++};
++
++static const uint8_t sFireRed10Sha1[20] = {
++	0x41, 0xCB, 0x23, 0xD8, 0xDC, 0xCC, 0x8E, 0xBD, 0x7C, 0x64,
++	0x9C, 0xD8, 0xFB, 0xB5, 0x8E, 0xEA, 0xCE, 0x6E, 0x2F, 0xDC,
++};
++
++static const uint8_t sFireRed11Sha1[20] = {
++	0xDD, 0x59, 0x45, 0xDB, 0x9B, 0x93, 0x07, 0x50, 0xCB, 0x39,
++	0xD0, 0x0C, 0x84, 0xDA, 0x85, 0x71, 0xFE, 0xEB, 0xF4, 0x17,
++};
++
++static const struct FireRedDialogueProfileData sProfiles[] = {
++	{
++		.callback2Overworld = 0x080565B4U,
++		.taskDrawFieldMessageBox = 0x08069370U,
++		.isFieldMessageBoxHidden = 0x0806951CU,
++		.waitForAorBPress = 0x0806B898U,
++		.taskBattleStart = 0x0807F620U,
++		.choiceTasks = { 0x0809CC98U, 0x0809CE54U, 0x0809CFDCU },
++		.trainerScriptStart = 0x081A4EB4U,
++		.trainerScriptEnd = 0x081A501FU,
++	},
++	{
++		.callback2Overworld = 0x080565C8U,
++		.taskDrawFieldMessageBox = 0x08069384U,
++		.isFieldMessageBoxHidden = 0x08069530U,
++		.waitForAorBPress = 0x0806B8ACU,
++		.taskBattleStart = 0x0807F634U,
++		.choiceTasks = { 0x0809CCACU, 0x0809CE68U, 0x0809CFF0U },
++		.trainerScriptStart = 0x081A4F2CU,
++		.trainerScriptEnd = 0x081A5097U,
++	},
++};
++
++static bool _addressOffset(uint32_t address, uint32_t base, size_t size,
++		size_t width, size_t* offset) {
++	if (!offset || address < base) {
++		return false;
++	}
++	uint32_t rawOffset = address - base;
++	if ((size_t) rawOffset > size || width > size - (size_t) rawOffset) {
++		return false;
++	}
++	*offset = (size_t) rawOffset;
++	return true;
++}
++
++static bool _readU8(const uint8_t* memory, size_t size, uint32_t base,
++		uint32_t address, uint8_t* value) {
++	size_t offset;
++	if (!memory || !value || !_addressOffset(address, base, size, 1, &offset)) {
++		return false;
++	}
++	*value = memory[offset];
++	return true;
++}
++
++static bool _readU32(const uint8_t* memory, size_t size, uint32_t base,
++		uint32_t address, uint32_t* value) {
++	size_t offset;
++	if (!memory || !value || !_addressOffset(address, base, size, 4, &offset)) {
++		return false;
++	}
++	*value = (uint32_t) memory[offset]
++			| (uint32_t) memory[offset + 1] << 8
++			| (uint32_t) memory[offset + 2] << 16
++			| (uint32_t) memory[offset + 3] << 24;
++	return true;
++}
++
++static bool _readEwram8(const struct FireRedDialogueDetector* detector,
++		uint32_t address, uint8_t* value) {
++	return _readU8(detector->ewram, detector->ewramSize,
++			FIRERED_EWRAM_BASE, address, value);
++}
++
++static bool _readIwram8(const struct FireRedDialogueDetector* detector,
++		uint32_t address, uint8_t* value) {
++	return _readU8(detector->iwram, detector->iwramSize,
++			FIRERED_IWRAM_BASE, address, value);
++}
++
++static bool _readIwram32(const struct FireRedDialogueDetector* detector,
++		uint32_t address, uint32_t* value) {
++	return _readU32(detector->iwram, detector->iwramSize,
++			FIRERED_IWRAM_BASE, address, value);
++}
++
++static bool _readRom8(const struct FireRedDialogueDetector* detector,
++		uint32_t address, uint8_t* value) {
++	return _readU8(detector->rom, detector->romSize,
++			FIRERED_ROM_BASE, address, value);
++}
++
++static uint32_t _codeAddress(uint32_t pointer) {
++	return pointer & ~1U;
++}
++
++static const struct FireRedDialogueProfileData* _profile(
++		const struct FireRedDialogueDetector* detector) {
++	if (!detector || !fireRedDialogueProfileSupported(detector->profile)) {
++		return NULL;
++	}
++	return &sProfiles[(unsigned) detector->profile - 1];
++}
++
++static bool _isTrainerScript(const struct FireRedDialogueProfileData* profile,
++		uint32_t scriptPointer) {
++	return scriptPointer >= profile->trainerScriptStart &&
++			scriptPointer < profile->trainerScriptEnd;
++}
++
++/* Prove that advancing this message cannot immediately run gameplay script.
++ * A normal msgbox can be nested through callstd/call, so follow only returns
++ * already present on the interpreter stack. The only accepted operations are
++ * cosmetic close/release commands and a terminating end/return. Any flag,
++ * branch, special, choice, trainerbattle, malformed pointer, or unknown opcode
++ * fails closed. This deliberately leaves some ordinary scripted messages at
++ * 1x rather than accelerating a trainer/legendary encounter lead-in. */
++static bool _hasSafeClosure(const struct FireRedDialogueDetector* detector,
++		uint32_t scriptPointer, uint8_t stackDepth) {
++	/* ScriptPush rejects depth 20, so accepting it would trust corrupt state. */
++	if (stackDepth >= FIRERED_CONTEXT_STACK_COUNT || scriptPointer == UINT32_MAX) {
++		return false;
++	}
++
++	uint32_t cursor = scriptPointer + 1U;
++	for (unsigned step = 0; step < FIRERED_CONTEXT_STACK_COUNT * 2U + 4U;
++			++step) {
++		uint8_t opcode;
++		if (!_readRom8(detector, cursor, &opcode)) {
++			return false;
++		}
++		switch (opcode) {
++		case FIRERED_CMD_END:
++			return true;
++		case FIRERED_CMD_RETURN:
++			if (!stackDepth) {
++				return true;
++			}
++			--stackDepth;
++			if (!_readIwram32(detector,
++					FIRERED_GLOBAL_CONTEXT + FIRERED_CONTEXT_STACK_OFFSET +
++					stackDepth * sizeof(uint32_t), &cursor)) {
++				return false;
++			}
++			break;
++		case FIRERED_CMD_CLOSE_MESSAGE:
++		case FIRERED_CMD_RELEASE_ALL:
++		case FIRERED_CMD_RELEASE:
++			if (cursor == UINT32_MAX) {
++				return false;
++			}
++			++cursor;
++			break;
++		default:
++			return false;
++		}
++	}
++	return false;
++}
++
++static void _block(struct FireRedDialogueDetector* detector) {
++	detector->sessionArmed = false;
++	detector->terminalStage = FIRERED_TERMINAL_NONE;
++	detector->lastState = FIRERED_DIALOGUE_BLOCKED;
++}
++
++static bool _taskState(const struct FireRedDialogueDetector* detector,
++		const struct FireRedDialogueProfileData* profile, bool* drawTaskActive,
++		bool* forbiddenTaskActive) {
++	*drawTaskActive = false;
++	*forbiddenTaskActive = false;
++	for (unsigned i = 0; i < FIRERED_TASK_COUNT; ++i) {
++		uint32_t task = FIRERED_TASKS + i * FIRERED_TASK_STRIDE;
++		uint8_t active;
++		uint32_t function;
++		if (!_readIwram8(detector, task + FIRERED_TASK_ACTIVE_OFFSET, &active) ||
++				!_readIwram32(detector, task + FIRERED_TASK_FUNC_OFFSET, &function)) {
++			return false;
++		}
++		if (!active) {
++			continue;
++		}
++
++		function = _codeAddress(function);
++		if (function == profile->taskDrawFieldMessageBox) {
++			*drawTaskActive = true;
++		}
++		if (function == profile->taskBattleStart ||
++				function == profile->choiceTasks[0] ||
++				function == profile->choiceTasks[1] ||
++				function == profile->choiceTasks[2]) {
++			*forbiddenTaskActive = true;
++		}
++	}
++	return true;
++}
++
++enum FireRedDialogueProfile fireRedDialogueProfileFromSha1(
++		const uint8_t sha1[20]) {
++	if (!sha1) {
++		return FIRERED_DIALOGUE_PROFILE_UNSUPPORTED;
++	}
++	if (!memcmp(sha1, sFireRed10Sha1, sizeof(sFireRed10Sha1))) {
++		return FIRERED_DIALOGUE_PROFILE_ENGLISH_1_0;
++	}
++	if (!memcmp(sha1, sFireRed11Sha1, sizeof(sFireRed11Sha1))) {
++		return FIRERED_DIALOGUE_PROFILE_ENGLISH_1_1;
++	}
++	return FIRERED_DIALOGUE_PROFILE_UNSUPPORTED;
++}
++
++bool fireRedDialogueProfileSupported(enum FireRedDialogueProfile profile) {
++	return profile == FIRERED_DIALOGUE_PROFILE_ENGLISH_1_0 ||
++			profile == FIRERED_DIALOGUE_PROFILE_ENGLISH_1_1;
++}
++
++void fireRedDialogueInit(struct FireRedDialogueDetector* detector,
++		enum FireRedDialogueProfile profile,
++		const uint8_t* ewram, size_t ewramSize,
++		const uint8_t* iwram, size_t iwramSize,
++		const uint8_t* rom, size_t romSize) {
++	if (!detector) {
++		return;
++	}
++	memset(detector, 0, sizeof(*detector));
++	if (!fireRedDialogueProfileSupported(profile) ||
++			!ewram || !iwram || !rom) {
++		return;
++	}
++
++	detector->profile = profile;
++	detector->ewram = ewram;
++	detector->ewramSize = ewramSize;
++	detector->iwram = iwram;
++	detector->iwramSize = iwramSize;
++	detector->rom = rom;
++	detector->romSize = romSize;
++	detector->lastState = FIRERED_DIALOGUE_BLOCKED;
++
++	/* Validate every fixed span once. Dynamic script pointers are checked on
++	 * every classification before the ROM is dereferenced. */
++	size_t unused;
++	const struct FireRedDialogueProfileData* profileData = _profile(detector);
++	if (!_addressOffset(FIRERED_TEXT_PRINTER_0 + FIRERED_TEXT_PRINTER_STATE_OFFSET,
++			FIRERED_EWRAM_BASE, ewramSize, 1, &unused) ||
++			!_addressOffset(FIRERED_MESSAGE_BOX_TYPE, FIRERED_EWRAM_BASE,
++				ewramSize, 1, &unused) ||
++			!_addressOffset(FIRERED_GLOBAL_CONTEXT + FIRERED_CONTEXT_SCRIPT_PTR_OFFSET,
++				FIRERED_IWRAM_BASE, iwramSize, 4, &unused) ||
++			!_addressOffset(FIRERED_MAIN + FIRERED_MAIN_IN_BATTLE_OFFSET,
++				FIRERED_IWRAM_BASE, iwramSize, 1, &unused) ||
++			!_addressOffset(FIRERED_TASKS +
++					(FIRERED_TASK_COUNT - 1) * FIRERED_TASK_STRIDE +
++					FIRERED_TASK_ACTIVE_OFFSET,
++				FIRERED_IWRAM_BASE, iwramSize, 1, &unused) ||
++			!_addressOffset(profileData->trainerScriptEnd - 1,
++				FIRERED_ROM_BASE, romSize, 1, &unused)) {
++		memset(detector, 0, sizeof(*detector));
++		return;
++	}
++}
++
++void fireRedDialogueReset(struct FireRedDialogueDetector* detector) {
++	if (detector) {
++		_block(detector);
++	}
++}
++
++enum FireRedDialogueState fireRedDialogueInspect(
++		struct FireRedDialogueDetector* detector) {
++	const struct FireRedDialogueProfileData* profile = _profile(detector);
++	if (!profile) {
++		return FIRERED_DIALOGUE_BLOCKED;
++	}
++
++	uint8_t inBattle;
++	uint8_t status;
++	uint8_t stackDepth;
++	uint8_t mode;
++	uint8_t messageBoxType;
++	uint8_t printerActive;
++	uint8_t printerState;
++	uint32_t callback2;
++	uint32_t nativePointer;
++	uint32_t scriptPointer;
++	bool drawTaskActive;
++	bool forbiddenTaskActive;
++	if (!_readIwram32(detector, FIRERED_MAIN + FIRERED_MAIN_CALLBACK2_OFFSET,
++			&callback2) ||
++			!_readIwram8(detector, FIRERED_MAIN + FIRERED_MAIN_IN_BATTLE_OFFSET,
++				&inBattle) ||
++			!_readIwram8(detector, FIRERED_GLOBAL_CONTEXT_STATUS, &status) ||
++			!_readIwram8(detector, FIRERED_GLOBAL_CONTEXT +
++				FIRERED_CONTEXT_STACK_DEPTH_OFFSET, &stackDepth) ||
++			!_readIwram8(detector, FIRERED_GLOBAL_CONTEXT +
++				FIRERED_CONTEXT_MODE_OFFSET, &mode) ||
++			!_readIwram32(detector, FIRERED_GLOBAL_CONTEXT +
++				FIRERED_CONTEXT_NATIVE_PTR_OFFSET, &nativePointer) ||
++			!_readIwram32(detector, FIRERED_GLOBAL_CONTEXT +
++				FIRERED_CONTEXT_SCRIPT_PTR_OFFSET, &scriptPointer) ||
++			!_readEwram8(detector, FIRERED_MESSAGE_BOX_TYPE, &messageBoxType) ||
++			!_readEwram8(detector, FIRERED_TEXT_PRINTER_0 +
++				FIRERED_TEXT_PRINTER_ACTIVE_OFFSET, &printerActive) ||
++			!_readEwram8(detector, FIRERED_TEXT_PRINTER_0 +
++				FIRERED_TEXT_PRINTER_STATE_OFFSET, &printerState) ||
++			!_taskState(detector, profile, &drawTaskActive,
++				&forbiddenTaskActive)) {
++		_block(detector);
++		return detector->lastState;
++	}
++
++	callback2 = _codeAddress(callback2);
++	nativePointer = _codeAddress(nativePointer);
++	if (callback2 != profile->callback2Overworld ||
++			(inBattle & FIRERED_MAIN_IN_BATTLE_MASK) ||
++			status != FIRERED_CONTEXT_RUNNING || forbiddenTaskActive ||
++			_isTrainerScript(profile, scriptPointer)) {
++		_block(detector);
++		return detector->lastState;
++	}
++
++	uint8_t nextCommand = 0;
++	bool hasNextCommand = _readRom8(detector, scriptPointer, &nextCommand);
++	if (!hasNextCommand) {
++		_block(detector);
++		return detector->lastState;
++	}
++	bool scriptAtWaitButton = nextCommand == FIRERED_CMD_WAIT_BUTTON_PRESS;
++	bool hiddenTerminal = messageBoxType == FIRERED_MESSAGE_BOX_HIDDEN &&
++			!printerActive && !drawTaskActive;
++
++	/* A session can only be armed by an ordinary field message whose script is
++	 * waiting for that box and whose next exact opcode is waitbuttonpress. */
++	if (mode == FIRERED_SCRIPT_MODE_NATIVE &&
++			nativePointer == profile->isFieldMessageBoxHidden &&
++			scriptAtWaitButton &&
++			_hasSafeClosure(detector, scriptPointer, stackDepth) &&
++			messageBoxType == FIRERED_MESSAGE_BOX_NORMAL &&
++			printerActive && drawTaskActive) {
++		detector->sessionArmed = true;
++		detector->terminalStage = FIRERED_TERMINAL_MESSAGE;
++		if (printerState == 0 || printerState == 4 ||
++				printerState == 5 || printerState == 6) {
++			detector->lastState = FIRERED_DIALOGUE_PRINTING;
++			return detector->lastState;
++		}
++		if (printerState == 1 || printerState == 2 || printerState == 3) {
++			detector->lastState = FIRERED_DIALOGUE_PAGE_WAIT;
++			return detector->lastState;
++		}
++		_block(detector);
++		return detector->lastState;
++	}
++
++	if (!detector->sessionArmed || !hiddenTerminal) {
++		_block(detector);
++		return detector->lastState;
++	}
++
++	if (mode == FIRERED_SCRIPT_MODE_NATIVE &&
++			nativePointer == profile->isFieldMessageBoxHidden &&
++			scriptAtWaitButton &&
++			(detector->terminalStage == FIRERED_TERMINAL_MESSAGE ||
++			 detector->terminalStage == FIRERED_TERMINAL_HIDDEN_NATIVE)) {
++		detector->terminalStage = FIRERED_TERMINAL_HIDDEN_NATIVE;
++		detector->lastState = FIRERED_DIALOGUE_TERMINAL_PENDING;
++		return detector->lastState;
++	}
++
++	if (mode == FIRERED_SCRIPT_MODE_BYTECODE && scriptAtWaitButton &&
++			(detector->terminalStage == FIRERED_TERMINAL_HIDDEN_NATIVE ||
++			 detector->terminalStage == FIRERED_TERMINAL_BYTECODE)) {
++		detector->terminalStage = FIRERED_TERMINAL_BYTECODE;
++		detector->lastState = FIRERED_DIALOGUE_TERMINAL_PENDING;
++		return detector->lastState;
++	}
++
++	if (mode == FIRERED_SCRIPT_MODE_NATIVE &&
++			nativePointer == profile->waitForAorBPress &&
++			(detector->terminalStage == FIRERED_TERMINAL_BYTECODE ||
++			 detector->terminalStage == FIRERED_TERMINAL_WAIT)) {
++		detector->terminalStage = FIRERED_TERMINAL_WAIT;
++		detector->lastState = FIRERED_DIALOGUE_TERMINAL_WAIT;
++		return detector->lastState;
++	}
++
++	_block(detector);
++	return detector->lastState;
++}
++
++void fireRedDialogueConsumeTerminal(struct FireRedDialogueDetector* detector) {
++	if (!detector || !detector->sessionArmed ||
++			detector->terminalStage != FIRERED_TERMINAL_WAIT ||
++			detector->lastState != FIRERED_DIALOGUE_TERMINAL_WAIT) {
++		return;
++	}
++	_block(detector);
++}
+diff --git a/src/platform/libretro/libretro_firered_dialogue.h b/src/platform/libretro/libretro_firered_dialogue.h
+new file mode 100644
+index 0000000..4ee0dd4
+--- /dev/null
++++ b/src/platform/libretro/libretro_firered_dialogue.h
+@@ -0,0 +1,60 @@
++/* Copyright (c) 2026 mGBA contributors
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++#ifndef LIBRETRO_FIRERED_DIALOGUE_H
++#define LIBRETRO_FIRERED_DIALOGUE_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++enum FireRedDialogueState {
++	FIRERED_DIALOGUE_BLOCKED,
++	FIRERED_DIALOGUE_PRINTING,
++	FIRERED_DIALOGUE_PAGE_WAIT,
++	FIRERED_DIALOGUE_TERMINAL_PENDING,
++	FIRERED_DIALOGUE_TERMINAL_WAIT,
++};
++
++enum FireRedDialogueProfile {
++	FIRERED_DIALOGUE_PROFILE_UNSUPPORTED,
++	FIRERED_DIALOGUE_PROFILE_ENGLISH_1_0,
++	FIRERED_DIALOGUE_PROFILE_ENGLISH_1_1,
++};
++
++/* The memory pointers are borrowed and must remain valid until the next init.
++ * `profile` and `terminalStage` are internal state kept here so callers can
++ * allocate one independent detector per emulated instance without allocation. */
++struct FireRedDialogueDetector {
++	const uint8_t* ewram;
++	size_t ewramSize;
++	const uint8_t* iwram;
++	size_t iwramSize;
++	const uint8_t* rom;
++	size_t romSize;
++	enum FireRedDialogueProfile profile;
++	unsigned terminalStage;
++	enum FireRedDialogueState lastState;
++	bool sessionArmed;
++};
++
++enum FireRedDialogueProfile fireRedDialogueProfileFromSha1(
++		const uint8_t sha1[20]);
++bool fireRedDialogueProfileSupported(enum FireRedDialogueProfile profile);
++void fireRedDialogueInit(struct FireRedDialogueDetector* detector,
++		enum FireRedDialogueProfile profile,
++		const uint8_t* ewram, size_t ewramSize,
++		const uint8_t* iwram, size_t iwramSize,
++		const uint8_t* rom, size_t romSize);
++void fireRedDialogueReset(struct FireRedDialogueDetector* detector);
++enum FireRedDialogueState fireRedDialogueInspect(
++		struct FireRedDialogueDetector* detector);
++
++/* Consumes a verified terminal wait, if present, and disarms the session. This
++ * makes an injected button a one-shot and prevents it advancing the script
++ * state that follows the dialogue. */
++void fireRedDialogueConsumeTerminal(struct FireRedDialogueDetector* detector);
++
++#endif
 diff --git a/src/platform/libretro/libretro_multi.c b/src/platform/libretro/libretro_multi.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba88dd4d9e
+index 0000000..93449d3
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi.c
-@@ -0,0 +1,1088 @@
+@@ -0,0 +1,1340 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -424,6 +1007,7 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +#include <mgba-util/audio-buffer.h>
 +#include <mgba-util/common.h>
 +#include <mgba-util/memory.h>
++#include <mgba-util/sha1.h>
 +#include <mgba-util/vfs.h>
 +
 +#include <mgba/core/config.h>
@@ -431,9 +1015,12 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +#include <mgba/core/log.h>
 +#include <mgba/core/version.h>
 +#include <mgba/internal/gba/gba.h>
++#include <mgba/internal/gba/input.h>
++#include <mgba/internal/gba/memory.h>
 +#include <mgba/internal/gba/savedata.h>
 +
 +#include "libretro-audio.h"
++#include "libretro_firered_dialogue.h"
 +#include "libretro-vfs.h"
 +#include "libretro_multi_support.h"
 +
@@ -455,7 +1042,7 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +#error "The barebones multi-instance core requires the GBA core"
 +#endif
 +
-+#define MULTI_FRONTEND_VERSION "0.2.0"
++#define MULTI_FRONTEND_VERSION "0.3.0"
 +#define VIDEO_STRIDE 256
 +#define VIDEO_HEIGHT_MAX 224
 +#define VIDEO_BUFFER_PIXELS (VIDEO_STRIDE * VIDEO_HEIGHT_MAX)
@@ -494,6 +1081,18 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +	unsigned audioSpeedTenths;
 +	int16_t rawAudio[AUDIO_RAW_CHUNK_FRAMES * 2];
 +	int16_t convertedAudio[AUDIO_CONVERTED_CHUNK_FRAMES * 2];
++	struct FireRedDialogueDetector dialogueDetector;
++	bool dialogueReleasePending;
++	bool dialogueWasEnabled;
++};
++
++struct MultiFrameCommand {
++	uint16_t keys;
++	unsigned manualFrames;
++	unsigned manualSpeedTenths;
++	unsigned dialogueSpeedTenths;
++	bool dialogueEnabled;
++	bool dialogueAutoAdvance;
 +};
 +
 +struct MultiWorker {
@@ -518,6 +1117,11 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +static bool useBitmasks;
 +static enum MultiAudioMode audioMode = MULTI_AUDIO_PLAYER_1;
 +static struct MultiSpeedState speedState[MULTI_MAX_INSTANCES];
++static struct MultiDialogueToggleState dialogueToggleState[MULTI_MAX_INSTANCES];
++static unsigned dialogueSpeedTenths = MULTI_DIALOGUE_DEFAULT_TENTHS;
++static bool dialogueAutoAdvance = true;
++static enum FireRedDialogueProfile dialogueProfile =
++		FIRERED_DIALOGUE_PROFILE_UNSUPPORTED;
 +
 +static void* romData;
 +static size_t romSize;
@@ -532,8 +1136,7 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +static pthread_cond_t workerWake = PTHREAD_COND_INITIALIZER;
 +static pthread_cond_t workerDone = PTHREAD_COND_INITIALIZER;
 +static enum MultiWorkerCommand workerCommand;
-+static uint16_t workerKeys[MULTI_MAX_INSTANCES];
-+static unsigned workerFrameSteps[MULTI_MAX_INSTANCES];
++static struct MultiFrameCommand workerFrames[MULTI_MAX_INSTANCES];
 +static uint64_t workerGeneration;
 +static unsigned workerPending;
 +static bool workerStop;
@@ -564,6 +1167,8 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +	{ "mgba_multi_speed_p1", "Player 1 speed target (R2 toggle); 2.0x|1.0x|1.1x|1.2x|1.3x|1.4x|1.5x|1.6x|1.7x|1.8x|1.9x|2.1x|2.2x|2.3x|2.4x|2.5x|2.6x|2.7x|2.8x|2.9x|3.0x|3.1x|3.2x|3.3x|3.4x|3.5x|3.6x|3.7x|3.8x|3.9x|4.0x" },
 +	{ "mgba_multi_speed_p2", "Player 2 speed target (R2 toggle); 2.0x|1.0x|1.1x|1.2x|1.3x|1.4x|1.5x|1.6x|1.7x|1.8x|1.9x|2.1x|2.2x|2.3x|2.4x|2.5x|2.6x|2.7x|2.8x|2.9x|3.0x|3.1x|3.2x|3.3x|3.4x|3.5x|3.6x|3.7x|3.8x|3.9x|4.0x" },
 +	{ "mgba_multi_speed_p3", "Player 3 speed target (R2 toggle); 2.0x|1.0x|1.1x|1.2x|1.3x|1.4x|1.5x|1.6x|1.7x|1.8x|1.9x|2.1x|2.2x|2.3x|2.4x|2.5x|2.6x|2.7x|2.8x|2.9x|3.0x|3.1x|3.2x|3.3x|3.4x|3.5x|3.6x|3.7x|3.8x|3.9x|4.0x" },
++	{ "mgba_multi_dialogue_speed", "FireRed dialogue speed (L2 toggle); 10x|5x|6x|7x|8x|9x|11x|12x|13x|14x|15x|16x|17x|18x|19x|20x" },
++	{ "mgba_multi_dialogue_auto_advance", "FireRed dialogue auto-advance; Enabled|Disabled" },
 +	{ NULL, NULL },
 +};
 +
@@ -649,6 +1254,15 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +	return multiAudioParseMode(_getVariable("mgba_multi_audio"));
 +}
 +
++static unsigned _requestedDialogueSpeedTenths(void) {
++	return multiDialogueParseTarget(_getVariable("mgba_multi_dialogue_speed"));
++}
++
++static bool _requestedDialogueAutoAdvance(void) {
++	const char* value = _getVariable("mgba_multi_dialogue_auto_advance");
++	return !value || strcmp(value, "Disabled") != 0;
++}
++
 +static unsigned _effectiveAudioSpeed(unsigned player) {
 +	return player < MULTI_MAX_INSTANCES ? multiSpeedEffectiveTenths(&speedState[player]) :
 +			MULTI_SPEED_ONE;
@@ -656,14 +1270,19 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +
 +static void _initializeRuntimeSettings(void) {
 +	audioMode = _requestedAudioMode();
++	dialogueSpeedTenths = _requestedDialogueSpeedTenths();
++	dialogueAutoAdvance = _requestedDialogueAutoAdvance();
 +	for (unsigned i = 0; i < MULTI_MAX_INSTANCES; ++i) {
 +		multiSpeedInit(&speedState[i]);
 +		multiSpeedSetTarget(&speedState[i], _requestedSpeedTenths(i));
++		multiDialogueToggleInit(&dialogueToggleState[i]);
 +	}
 +}
 +
 +static void _updateRuntimeSettings(void) {
 +	audioMode = _requestedAudioMode();
++	dialogueSpeedTenths = _requestedDialogueSpeedTenths();
++	dialogueAutoAdvance = _requestedDialogueAutoAdvance();
 +	for (unsigned i = 0; i < MULTI_MAX_INSTANCES; ++i) {
 +		multiSpeedSetTarget(&speedState[i], _requestedSpeedTenths(i));
 +	}
@@ -723,6 +1342,7 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +}
 +
 +static bool _copyRom(const struct retro_game_info* game) {
++	dialogueProfile = FIRERED_DIALOGUE_PROFILE_UNSUPPORTED;
 +	if (!game) {
 +		return false;
 +	}
@@ -774,6 +1394,9 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +		}
 +		file->close(file);
 +	}
++	uint8_t sha1[20];
++	sha1Buffer(romData, romSize, sha1);
++	dialogueProfile = fireRedDialogueProfileFromSha1(sha1);
 +	return true;
 +}
 +
@@ -809,6 +1432,16 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +		rom->close(rom);
 +		return false;
 +	}
++	size_t ewramSize = 0;
++	size_t iwramSize = 0;
++	const uint8_t* ewram = instance->core->getMemoryBlock(
++			instance->core, GBA_REGION_EWRAM, &ewramSize);
++	const uint8_t* iwram = instance->core->getMemoryBlock(
++			instance->core, GBA_REGION_IWRAM, &iwramSize);
++	fireRedDialogueInit(&instance->dialogueDetector, dialogueProfile,
++			ewram, ewramSize, iwram, iwramSize, romData, romSize);
++	instance->dialogueReleasePending = false;
++	instance->dialogueWasEnabled = false;
 +	_loadBios(instance->core);
 +	instance->captureAudio = false;
 +	instance->audioSpeedTenths = MULTI_SPEED_ONE;
@@ -846,19 +1479,36 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +		romData = NULL;
 +	}
 +	romSize = 0;
++	dialogueProfile = FIRERED_DIALOGUE_PROFILE_UNSUPPORTED;
 +	instanceCount = 0;
 +	deferredSetup = false;
 +	fatalLoadError = false;
 +	multiAudioClockReset(&audioClock);
 +}
 +
-+static void _runInstanceFrames(unsigned index, uint16_t keys, unsigned frameSteps) {
++static void _setInstanceAudioSpeed(unsigned index, unsigned speedTenths) {
++	struct MultiInstance* instance = &instances[index];
++	if (instance->audioSpeedTenths == speedTenths) {
++		return;
++	}
++	/* Finish or discard samples produced at the old emulation ratio before
++	 * resetting the scaled converter. The FIFO is intentionally cleared: an
++	 * old-ratio lead must never turn into delayed audio after a mode change. */
++	_captureOrDiscardInstanceAudio(instance);
++	instance->audioSpeedTenths = speedTenths;
++	audioConverterResetScaled(&instance->converter,
++			instance->core->audioSampleRate(instance->core), speedTenths);
++	multiAudioFifoReset(&instance->audio);
++}
++
++static void _runCoreFrames(unsigned index, uint16_t keys, unsigned frameSteps,
++		unsigned maximumFrames) {
 +	struct MultiInstance* instance = &instances[index];
 +	struct GBA* gba = instance->core->board;
 +	if (frameSteps < 1) {
 +		frameSteps = 1;
-+	} else if (frameSteps > MULTI_SPEED_MAX_FRAMES) {
-+		frameSteps = MULTI_SPEED_MAX_FRAMES;
++	} else if (frameSteps > maximumFrames) {
++		frameSteps = maximumFrames;
 +	}
 +	instance->core->setKeys(instance->core, keys);
 +	for (unsigned step = 0; step < frameSteps; ++step) {
@@ -879,6 +1529,133 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +	}
 +}
 +
++static void _resetDialogueRuntime(struct MultiInstance* instance) {
++	fireRedDialogueReset(&instance->dialogueDetector);
++	instance->dialogueReleasePending = false;
++	instance->dialogueWasEnabled = false;
++}
++
++static void _runInstanceFrames(unsigned index, const struct MultiFrameCommand* command) {
++	struct MultiInstance* instance = &instances[index];
++	const uint16_t advanceMask = (uint16_t) ((1U << GBA_KEY_A) | (1U << GBA_KEY_B));
++	bool physicalAdvance = (command->keys & advanceMask) != 0;
++
++	/* This is the steady-state fast path. With dialogue assist off there are no
++	 * emulated-memory reads and the proven manual scheduler remains unchanged. */
++	if (!command->dialogueEnabled && !instance->dialogueReleasePending) {
++		if (instance->dialogueWasEnabled) {
++			_resetDialogueRuntime(instance);
++		}
++		_setInstanceAudioSpeed(index, command->manualSpeedTenths);
++		_runCoreFrames(index, command->keys, command->manualFrames,
++				MULTI_SPEED_MAX_FRAMES);
++		return;
++	}
++
++	/* Every automatic or physical advance observed during an assisted dialogue
++	 * is followed by at least one emulated frame with A/B released. This is done
++	 * before any new classification so the press cannot leak into a menu or
++	 * battle created by the preceding script command. */
++	if (instance->dialogueReleasePending) {
++		_setInstanceAudioSpeed(index, MULTI_SPEED_ONE);
++		/* Always provide a genuinely released emulated frame. If a physical A/B
++		 * remains held, keep suppressing it until the controller is released so
++		 * neither that button nor an A-to-B change can create a second edge. */
++		_runCoreFrames(index, command->keys & ~advanceMask, 1, 1);
++		if (!physicalAdvance) {
++			instance->dialogueReleasePending = false;
++		}
++		if (!command->dialogueEnabled && !instance->dialogueReleasePending) {
++			_resetDialogueRuntime(instance);
++		}
++		return;
++	}
++
++	if (!command->dialogueEnabled) {
++		_resetDialogueRuntime(instance);
++		_setInstanceAudioSpeed(index, command->manualSpeedTenths);
++		_runCoreFrames(index, command->keys, command->manualFrames,
++				MULTI_SPEED_MAX_FRAMES);
++		return;
++	}
++	if (!instance->dialogueWasEnabled) {
++		fireRedDialogueReset(&instance->dialogueDetector);
++		instance->dialogueWasEnabled = true;
++	}
++
++	enum FireRedDialogueState state =
++			fireRedDialogueInspect(&instance->dialogueDetector);
++	if (state == FIRERED_DIALOGUE_BLOCKED) {
++		_setInstanceAudioSpeed(index, command->manualSpeedTenths);
++		_runCoreFrames(index, command->keys, command->manualFrames,
++				MULTI_SPEED_MAX_FRAMES);
++		return;
++	}
++
++	/* Do not repeat a physically held A/B across an accelerated batch. Waiting
++	 * for a clean release also guarantees that a later synthetic A has an edge. */
++	if (physicalAdvance) {
++		_setInstanceAudioSpeed(index, MULTI_SPEED_ONE);
++		_runCoreFrames(index, command->keys, 1, 1);
++		instance->dialogueReleasePending = true;
++		return;
++	}
++
++	uint16_t releasedKeys = command->keys & ~advanceMask;
++	if (state == FIRERED_DIALOGUE_PRINTING) {
++		unsigned frameBudget = command->dialogueSpeedTenths / MULTI_SPEED_ONE;
++		if (frameBudget < MULTI_DIALOGUE_MIN_TENTHS / MULTI_SPEED_ONE) {
++			frameBudget = MULTI_DIALOGUE_MIN_TENTHS / MULTI_SPEED_ONE;
++		} else if (frameBudget > MULTI_DIALOGUE_MAX_FRAMES) {
++			frameBudget = MULTI_DIALOGUE_MAX_FRAMES;
++		}
++		_setInstanceAudioSpeed(index, command->dialogueSpeedTenths);
++		struct GBA* gba = instance->core->board;
++		instance->core->setKeys(instance->core, releasedKeys);
++		bool needsBoundaryFrame = false;
++		for (unsigned step = 0; step < frameBudget; ++step) {
++			if (step && fireRedDialogueInspect(&instance->dialogueDetector) !=
++					FIRERED_DIALOGUE_PRINTING) {
++				needsBoundaryFrame = true;
++				break;
++			}
++			gba->video.frameskipCounter = step + 1 < frameBudget ? 1 : 0;
++			instance->core->runFrame(instance->core);
++			if (step + 1 < frameBudget) {
++				_captureOrDiscardInstanceAudio(instance);
++			}
++		}
++		gba->video.frameskipCounter = 0;
++		if (needsBoundaryFrame) {
++			/* The preceding subframe was intentionally not rendered because more
++			 * printing frames were expected. Render one released frame at 1x so a
++			 * completed page cannot disappear before auto-advance. This remains
++			 * within the original frame budget because at least one planned
++			 * accelerated subframe was not executed. */
++			_setInstanceAudioSpeed(index, MULTI_SPEED_ONE);
++			_runCoreFrames(index, releasedKeys, 1, 1);
++		}
++		return;
++	}
++
++	_setInstanceAudioSpeed(index, MULTI_SPEED_ONE);
++	if (state == FIRERED_DIALOGUE_PAGE_WAIT && command->dialogueAutoAdvance) {
++		_runCoreFrames(index, releasedKeys | (1U << GBA_KEY_A), 1, 1);
++		instance->dialogueReleasePending = true;
++		return;
++	}
++	if (state == FIRERED_DIALOGUE_TERMINAL_WAIT && command->dialogueAutoAdvance) {
++		_runCoreFrames(index, releasedKeys | (1U << GBA_KEY_A), 1, 1);
++		fireRedDialogueConsumeTerminal(&instance->dialogueDetector);
++		instance->dialogueReleasePending = true;
++		return;
++	}
++
++	/* Page waits with auto-advance disabled, and the verified transition into a
++	 * terminal wait, always advance by one real emulated frame at 1x. */
++	_runCoreFrames(index, releasedKeys, 1, 1);
++}
++
 +static void* _workerMain(void* context) {
 +	struct MultiWorker* worker = context;
 +	uint64_t observedGeneration = 0;
@@ -893,15 +1670,15 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +
 +		uint64_t generation = workerGeneration;
 +		enum MultiWorkerCommand command = workerCommand;
-+		uint16_t keys = workerKeys[worker->instance];
-+		unsigned frameSteps = workerFrameSteps[worker->instance];
++		struct MultiFrameCommand frame = workerFrames[worker->instance];
 +		pthread_mutex_unlock(&workerMutex);
 +
 +		struct mCore* core = instances[worker->instance].core;
 +		if (command == WORKER_COMMAND_FRAME) {
-+			_runInstanceFrames(worker->instance, keys, frameSteps);
++			_runInstanceFrames(worker->instance, &frame);
 +		} else if (command == WORKER_COMMAND_RESET) {
 +			core->reset(core);
++			_resetDialogueRuntime(&instances[worker->instance]);
 +		}
 +
 +		pthread_mutex_lock(&workerMutex);
@@ -988,14 +1765,15 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +	parallelActive = false;
 +}
 +
-+static void _executeBatch(enum MultiWorkerCommand command, const uint16_t* keys,
-+		const unsigned* frameSteps) {
++static void _executeBatch(enum MultiWorkerCommand command,
++		const struct MultiFrameCommand* frames) {
 +	if (!parallelActive) {
 +		for (unsigned i = 0; i < instanceCount; ++i) {
 +			if (command == WORKER_COMMAND_FRAME) {
-+				_runInstanceFrames(i, keys[i], frameSteps[i]);
++				_runInstanceFrames(i, &frames[i]);
 +			} else if (command == WORKER_COMMAND_RESET) {
 +				instances[i].core->reset(instances[i].core);
++				_resetDialogueRuntime(&instances[i]);
 +			}
 +		}
 +		return;
@@ -1003,11 +1781,8 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +
 +	pthread_mutex_lock(&workerMutex);
 +	workerCommand = command;
-+	if (keys) {
-+		memcpy(workerKeys, keys, instanceCount * sizeof(*keys));
-+	}
-+	if (frameSteps) {
-+		memcpy(workerFrameSteps, frameSteps, instanceCount * sizeof(*frameSteps));
++	if (frames) {
++		memcpy(workerFrames, frames, instanceCount * sizeof(*frames));
 +	}
 +	workerPending = instanceCount - 1;
 +	++workerGeneration;
@@ -1015,9 +1790,10 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +	pthread_mutex_unlock(&workerMutex);
 +
 +	if (command == WORKER_COMMAND_FRAME) {
-+		_runInstanceFrames(0, keys[0], frameSteps[0]);
++		_runInstanceFrames(0, &frames[0]);
 +	} else if (command == WORKER_COMMAND_RESET) {
 +		instances[0].core->reset(instances[0].core);
++		_resetDialogueRuntime(&instances[0]);
 +	}
 +
 +	pthread_mutex_lock(&workerMutex);
@@ -1041,10 +1817,12 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +	int selected = multiAudioSelectedIndex(audioMode, instanceCount);
 +	for (unsigned i = 0; i < instanceCount; ++i) {
 +		bool capture = selected >= 0 && i == (unsigned) selected;
-+		unsigned speedTenths = _effectiveAudioSpeed(i);
-+		if (instances[i].captureAudio != capture ||
-+				instances[i].audioSpeedTenths != speedTenths) {
-+			_resetInstanceAudioPipeline(i, capture, speedTenths);
++		if (instances[i].captureAudio != capture) {
++			/* Speed changes belong to the instance's owner lane. A frontend audio
++			 * routing change happens between worker generations and preserves the
++			 * currently active conversion ratio. */
++			_resetInstanceAudioPipeline(i, capture,
++					instances[i].audioSpeedTenths);
 +		}
 +	}
 +}
@@ -1067,6 +1845,7 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +	for (unsigned i = 0; i < instanceCount; ++i) {
 +		struct mCore* core = instances[i].core;
 +		core->reset(core);
++		_resetDialogueRuntime(&instances[i]);
 +		struct VFile* save = VFileFromMemory(saveData[i], SAVE_SLOT_SIZE);
 +		if (!save || !core->loadSave(core, save)) {
 +			if (save) {
@@ -1102,9 +1881,12 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +	return true;
 +}
 +
-+static uint16_t _readKeys(unsigned port, bool* speedToggle) {
++static uint16_t _readKeys(unsigned port, bool* speedToggle, bool* dialogueToggle) {
 +	if (speedToggle) {
 +		*speedToggle = false;
++	}
++	if (dialogueToggle) {
++		*dialogueToggle = false;
 +	}
 +	if (!inputCallback) {
 +		return 0;
@@ -1119,6 +1901,9 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +		if (speedToggle) {
 +			*speedToggle = (mask >> RETRO_DEVICE_ID_JOYPAD_R2) & 1U;
 +		}
++		if (dialogueToggle) {
++			*dialogueToggle = (mask >> RETRO_DEVICE_ID_JOYPAD_L2) & 1U;
++		}
 +	} else {
 +		for (unsigned i = 0; i < sizeof(keymap) / sizeof(*keymap); ++i) {
 +			keys |= (!!inputCallback(port, RETRO_DEVICE_JOYPAD, 0, keymap[i])) << i;
@@ -1126,6 +1911,10 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +		if (speedToggle) {
 +			*speedToggle = !!inputCallback(port, RETRO_DEVICE_JOYPAD, 0,
 +					RETRO_DEVICE_ID_JOYPAD_R2);
++		}
++		if (dialogueToggle) {
++			*dialogueToggle = !!inputCallback(port, RETRO_DEVICE_JOYPAD, 0,
++					RETRO_DEVICE_ID_JOYPAD_L2);
 +		}
 +	}
 +	return keys;
@@ -1157,6 +1946,37 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +			"Player %u speed target is 1.0x; select a faster target in Core Options",
 +			player + 1);
 +	struct retro_message message = { text, 180 };
++	environCallback(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
++	_frontendLog(RETRO_LOG_INFO, "%s", text);
++}
++
++static void _showDialogueMessage(unsigned player,
++		enum MultiDialogueToggleResult result) {
++	if (!environCallback || result == MULTI_DIALOGUE_TOGGLE_NONE) {
++		return;
++	}
++	char text[144];
++	switch (result) {
++	case MULTI_DIALOGUE_TOGGLE_ENABLED:
++		snprintf(text, sizeof(text),
++				"Player %u FireRed dialogue assist: %ux, auto-next %s",
++				player + 1, dialogueSpeedTenths / MULTI_SPEED_ONE,
++				dialogueAutoAdvance ? "on" : "off");
++		break;
++	case MULTI_DIALOGUE_TOGGLE_DISABLED:
++		snprintf(text, sizeof(text),
++				"Player %u FireRed dialogue assist: off", player + 1);
++		break;
++	case MULTI_DIALOGUE_TOGGLE_UNAVAILABLE:
++		snprintf(text, sizeof(text),
++				"Player %u dialogue assist unavailable: clean FireRed USA 1.0/1.1 required",
++				player + 1);
++		break;
++	case MULTI_DIALOGUE_TOGGLE_NONE:
++	default:
++		return;
++	}
++	struct retro_message message = { text, 240 };
 +	environCallback(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
 +	_frontendLog(RETRO_LOG_INFO, "%s", text);
 +}
@@ -1314,13 +2134,13 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +	useBitmasks = environCallback(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL);
 +
 +	static struct retro_input_descriptor descriptors[
-+			MULTI_MAX_INSTANCES * ((sizeof(keymap) / sizeof(*keymap)) + 1) + 1];
++			MULTI_MAX_INSTANCES * ((sizeof(keymap) / sizeof(*keymap)) + 2) + 1];
 +	static const char* names[] = {
 +		"A", "B", "Select", "Start", "Right", "Left", "Up", "Down", "R", "L",
 +	};
 +	memset(descriptors, 0, sizeof(descriptors));
 +	for (unsigned port = 0; port < MULTI_MAX_INSTANCES; ++port) {
-+		size_t base = port * ((sizeof(keymap) / sizeof(*keymap)) + 1);
++		size_t base = port * ((sizeof(keymap) / sizeof(*keymap)) + 2);
 +		for (unsigned key = 0; key < sizeof(keymap) / sizeof(*keymap); ++key) {
 +			struct retro_input_descriptor* descriptor = &descriptors[base + key];
 +			descriptor->port = port;
@@ -1334,6 +2154,12 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +		speed->device = RETRO_DEVICE_JOYPAD;
 +		speed->id = RETRO_DEVICE_ID_JOYPAD_R2;
 +		speed->description = "Toggle Speed";
++		struct retro_input_descriptor* dialogue =
++				&descriptors[base + sizeof(keymap) / sizeof(*keymap) + 1];
++		dialogue->port = port;
++		dialogue->device = RETRO_DEVICE_JOYPAD;
++		dialogue->id = RETRO_DEVICE_ID_JOYPAD_L2;
++		dialogue->description = "Toggle FireRed Dialogue Assist";
 +	}
 +	environCallback(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, descriptors);
 +
@@ -1407,22 +2233,31 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +	if (inputPollCallback) {
 +		inputPollCallback();
 +	}
-+	uint16_t keys[MULTI_MAX_INSTANCES] = { 0, 0, 0 };
-+	unsigned frameSteps[MULTI_MAX_INSTANCES] = { 1, 1, 1 };
++	struct MultiFrameCommand frames[MULTI_MAX_INSTANCES] = { 0 };
 +	for (unsigned i = 0; i < instanceCount; ++i) {
 +		bool speedToggle = false;
-+		keys[i] = _readKeys(i, &speedToggle);
++		bool dialogueToggle = false;
++		frames[i].keys = _readKeys(i, &speedToggle, &dialogueToggle);
 +		bool wasDown = speedState[i].buttonDown;
 +		if (multiSpeedHandleR2(&speedState[i], speedToggle)) {
 +			_showSpeedMessage(i);
 +		} else if (speedToggle && !wasDown &&
-+				speedState[i].targetTenths == MULTI_SPEED_ONE) {
++					speedState[i].targetTenths == MULTI_SPEED_ONE) {
 +			_showInactiveSpeedMessage(i);
 +		}
-+		frameSteps[i] = multiSpeedNextFrames(&speedState[i]);
++		enum MultiDialogueToggleResult dialogueResult = multiDialogueHandleL2(
++				&dialogueToggleState[i], dialogueToggle,
++				fireRedDialogueProfileSupported(
++						instances[i].dialogueDetector.profile));
++		_showDialogueMessage(i, dialogueResult);
++		frames[i].manualFrames = multiSpeedNextFrames(&speedState[i]);
++		frames[i].manualSpeedTenths = _effectiveAudioSpeed(i);
++		frames[i].dialogueSpeedTenths = dialogueSpeedTenths;
++		frames[i].dialogueEnabled = dialogueToggleState[i].enabled;
++		frames[i].dialogueAutoAdvance = dialogueAutoAdvance;
 +	}
 +	_prepareAudioPipelines();
-+	_executeBatch(WORKER_COMMAND_FRAME, keys, frameSteps);
++	_executeBatch(WORKER_COMMAND_FRAME, frames);
 +	_syncRtcTrailers();
 +
 +	struct MultiLayout layout;
@@ -1438,7 +2273,7 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +	if (!instanceCount || !_finishDeferredSetup()) {
 +		return;
 +	}
-+	_executeBatch(WORKER_COMMAND_RESET, NULL, NULL);
++	_executeBatch(WORKER_COMMAND_RESET, NULL);
 +	for (unsigned i = 0; i < instanceCount; ++i) {
 +		multiSpeedResetPhase(&speedState[i]);
 +	}
@@ -1494,10 +2329,10 @@ index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba
 +}
 diff --git a/src/platform/libretro/libretro_multi_support.c b/src/platform/libretro/libretro_multi_support.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..db6e9d33c684d6528c20ff55d4cc1550a5a44e73
+index 0000000..b082be7
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi_support.c
-@@ -0,0 +1,274 @@
+@@ -0,0 +1,320 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -1614,6 +2449,52 @@ index 0000000000000000000000000000000000000000..db6e9d33c684d6528c20ff55d4cc1550
 +	unsigned frames = speed->phase / MULTI_SPEED_MIN_TENTHS;
 +	speed->phase %= MULTI_SPEED_MIN_TENTHS;
 +	return frames;
++}
++
++unsigned multiDialogueParseTarget(const char* value) {
++	if (!value) {
++		return MULTI_DIALOGUE_DEFAULT_TENTHS;
++	}
++
++	unsigned multiplier = 0;
++	const char* cursor = value;
++	while (*cursor >= '0' && *cursor <= '9') {
++		multiplier = multiplier * 10U + (unsigned) (*cursor - '0');
++		++cursor;
++	}
++	if (cursor == value || value[0] == '0' || cursor[0] != 'x' || cursor[1] != '\0' ||
++			multiplier < MULTI_DIALOGUE_MIN_TENTHS / MULTI_SPEED_MIN_TENTHS ||
++			multiplier > MULTI_DIALOGUE_MAX_TENTHS / MULTI_SPEED_MIN_TENTHS) {
++		return MULTI_DIALOGUE_DEFAULT_TENTHS;
++	}
++	return multiplier * MULTI_SPEED_MIN_TENTHS;
++}
++
++void multiDialogueToggleInit(struct MultiDialogueToggleState* state) {
++	if (!state) {
++		return;
++	}
++	state->enabled = false;
++	state->buttonDown = false;
++}
++
++enum MultiDialogueToggleResult multiDialogueHandleL2(
++		struct MultiDialogueToggleState* state, bool pressed, bool available) {
++	if (!state) {
++		return MULTI_DIALOGUE_TOGGLE_NONE;
++	}
++
++	bool rising = pressed && !state->buttonDown;
++	state->buttonDown = pressed;
++	if (!rising) {
++		return MULTI_DIALOGUE_TOGGLE_NONE;
++	}
++	if (!available) {
++		state->enabled = false;
++		return MULTI_DIALOGUE_TOGGLE_UNAVAILABLE;
++	}
++	state->enabled = !state->enabled;
++	return state->enabled ? MULTI_DIALOGUE_TOGGLE_ENABLED : MULTI_DIALOGUE_TOGGLE_DISABLED;
 +}
 +
 +enum MultiAudioMode multiAudioParseMode(const char* value) {
@@ -1774,10 +2655,10 @@ index 0000000000000000000000000000000000000000..db6e9d33c684d6528c20ff55d4cc1550
 +}
 diff --git a/src/platform/libretro/libretro_multi_support.h b/src/platform/libretro/libretro_multi_support.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..a11145a60f3ee6b0f1a7e71ddae2c7cf1bd39700
+index 0000000..19d4474
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi_support.h
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,106 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -1804,6 +2685,11 @@ index 0000000000000000000000000000000000000000..a11145a60f3ee6b0f1a7e71ddae2c7cf
 +#define MULTI_SPEED_DEFAULT MULTI_SPEED_DEFAULT_TENTHS
 +#define MULTI_SPEED_MAX_FRAMES (MULTI_SPEED_MAX_TENTHS / MULTI_SPEED_MIN_TENTHS)
 +
++#define MULTI_DIALOGUE_MIN_TENTHS 50
++#define MULTI_DIALOGUE_MAX_TENTHS 200
++#define MULTI_DIALOGUE_DEFAULT_TENTHS 100
++#define MULTI_DIALOGUE_MAX_FRAMES (MULTI_DIALOGUE_MAX_TENTHS / MULTI_SPEED_MIN_TENTHS)
++
 +struct MultiPlacement {
 +	unsigned x;
 +	unsigned y;
@@ -1824,6 +2710,18 @@ index 0000000000000000000000000000000000000000..a11145a60f3ee6b0f1a7e71ddae2c7cf
 +	unsigned phase;
 +	bool enabled;
 +	bool buttonDown;
++};
++
++struct MultiDialogueToggleState {
++	bool enabled;
++	bool buttonDown;
++};
++
++enum MultiDialogueToggleResult {
++	MULTI_DIALOGUE_TOGGLE_NONE,
++	MULTI_DIALOGUE_TOGGLE_ENABLED,
++	MULTI_DIALOGUE_TOGGLE_DISABLED,
++	MULTI_DIALOGUE_TOGGLE_UNAVAILABLE,
 +};
 +
 +enum MultiAudioMode {
@@ -1848,6 +2746,10 @@ index 0000000000000000000000000000000000000000..a11145a60f3ee6b0f1a7e71ddae2c7cf
 +bool multiSpeedHandleR2(struct MultiSpeedState* speed, bool pressed);
 +unsigned multiSpeedEffectiveTenths(const struct MultiSpeedState* speed);
 +unsigned multiSpeedNextFrames(struct MultiSpeedState* speed);
++unsigned multiDialogueParseTarget(const char* value);
++void multiDialogueToggleInit(struct MultiDialogueToggleState* state);
++enum MultiDialogueToggleResult multiDialogueHandleL2(
++		struct MultiDialogueToggleState* state, bool pressed, bool available);
 +enum MultiAudioMode multiAudioParseMode(const char* value);
 +int multiAudioSelectedIndex(enum MultiAudioMode mode, unsigned activeCount);
 +void multiAudioClockReset(struct MultiAudioClock* clock);
@@ -1865,7 +2767,7 @@ index 0000000000000000000000000000000000000000..a11145a60f3ee6b0f1a7e71ddae2c7cf
 +#endif
 diff --git a/src/platform/libretro/mgba_multi_libretro.info b/src/platform/libretro/mgba_multi_libretro.info
 new file mode 100644
-index 0000000000000000000000000000000000000000..7d8917de76c3142c1dfae6ce1240ebd2e01da85b
+index 0000000..0ea5fd7
 --- /dev/null
 +++ b/src/platform/libretro/mgba_multi_libretro.info
 @@ -0,0 +1,13 @@
@@ -1880,14 +2782,14 @@ index 0000000000000000000000000000000000000000..7d8917de76c3142c1dfae6ce1240ebd2
 +database = "Nintendo - Game Boy Advance"
 +license = "MPLv2"
 +permissions = ""
-+display_version = "0.11-dev-multi.0.2.0"
++display_version = "0.11-dev-multi.0.3.0"
 +supports_no_game = "false"
 diff --git a/tests/libretro_audio_test.c b/tests/libretro_audio_test.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..8a55e504048b7f4dc6b8fb2d19de88100013cdcf
+index 0000000..0e359ba
 --- /dev/null
 +++ b/tests/libretro_audio_test.c
-@@ -0,0 +1,225 @@
+@@ -0,0 +1,250 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -1965,15 +2867,39 @@ index 0000000000000000000000000000000000000000..8a55e504048b7f4dc6b8fb2d19de8810
 +		assert(converter.inputRate == rates[r]);
 +		assert(convertFrames(&converter, 10 * nativeFramesPerEvent(rates[r]), NULL) == 40);
 +
-+		audioConverterResetScaled(&converter, rates[r], 41);
++		audioConverterResetScaled(&converter, rates[r], 201);
 +		assert(converter.inputRate == rates[r]);
-+		assert(convertFrames(&converter, 40 * nativeFramesPerEvent(rates[r]), NULL) == 40);
++		assert(convertFrames(&converter, 200 * nativeFramesPerEvent(rates[r]), NULL) == 40);
 +	}
 +
 +	struct LibretroAudioConverter converter;
 +	audioConverterResetScaled(&converter, 0, 30);
 +	assert(converter.mode == CONV_PASSTHROUGH);
 +	assert(convertFrames(&converter, 37, NULL) == 37);
++}
++
++static void testDialogueScaledRatesLongRun(void) {
++	for (unsigned speedTenths = MULTI_DIALOGUE_MIN_TENTHS;
++			speedTenths <= MULTI_DIALOGUE_MAX_TENTHS; speedTenths += 10) {
++		for (size_t r = 0; r < sizeof(rates) / sizeof(*rates); ++r) {
++			struct LibretroAudioConverter converter;
++			struct MultiAudioFifo fifo;
++			audioConverterResetScaled(&converter, rates[r], speedTenths);
++			multiAudioFifoReset(&fifo);
++			for (unsigned period = 0; period < SCALED_LONG_RUN_PERIODS; ++period) {
++				assert(convertFrames(&converter,
++						speedTenths * nativeFramesPerEvent(rates[r]), &fifo) == 40);
++				assert(fifo.size == 40);
++				for (unsigned frame = 0; frame < 40; ++frame) {
++					int16_t left;
++					int16_t right;
++					assert(multiAudioFifoPop(&fifo, &left, &right));
++				}
++			}
++			assert(fifo.size == 0);
++			assert(fifo.dropped == 0);
++		}
++	}
 +}
 +
 +static void testEveryScaledRateLongRun(void) {
@@ -2109,16 +3035,528 @@ index 0000000000000000000000000000000000000000..8a55e504048b7f4dc6b8fb2d19de8810
 +	testEveryOrderedRateTransition();
 +	testScaledConverterResetBounds();
 +	testEveryScaledRateLongRun();
++	testDialogueScaledRatesLongRun();
 +	testScaledSchedulePacing();
 +	testTenMinuteNoDebtPacing();
 +	return 0;
 +}
+diff --git a/tests/libretro_firered_dialogue_test.c b/tests/libretro_firered_dialogue_test.c
+new file mode 100644
+index 0000000..c0b87e3
+--- /dev/null
++++ b/tests/libretro_firered_dialogue_test.c
+@@ -0,0 +1,505 @@
++/* Copyright (c) 2026 mGBA contributors
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "libretro_firered_dialogue.h"
++
++#include <assert.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++
++#define EWRAM_BASE 0x02000000U
++#define EWRAM_SIZE 0x00040000U
++#define IWRAM_BASE 0x03000000U
++#define IWRAM_SIZE 0x00008000U
++#define ROM_BASE 0x08000000U
++#define ROM_SIZE 0x01000000U
++
++#define TEXT_PRINTER_0 0x02020034U
++#define PRINTER_ACTIVE (TEXT_PRINTER_0 + 0x1BU)
++#define PRINTER_STATE (TEXT_PRINTER_0 + 0x1CU)
++#define MESSAGE_BOX_TYPE 0x0203709CU
++#define CONTEXT_STATUS 0x03000EA8U
++#define CONTEXT 0x03000EB0U
++#define CONTEXT_STACK_DEPTH (CONTEXT + 0U)
++#define CONTEXT_MODE (CONTEXT + 1U)
++#define CONTEXT_NATIVE (CONTEXT + 4U)
++#define CONTEXT_SCRIPT (CONTEXT + 8U)
++#define CONTEXT_STACK (CONTEXT + 12U)
++#define MAIN 0x030030F0U
++#define MAIN_CALLBACK2 (MAIN + 4U)
++#define MAIN_IN_BATTLE (MAIN + 0x439U)
++#define TASKS 0x03005090U
++#define TASK_STRIDE 0x28U
++#define TASK_ACTIVE_OFFSET 4U
++
++static const uint8_t sha10[20] = {
++	0x41, 0xCB, 0x23, 0xD8, 0xDC, 0xCC, 0x8E, 0xBD, 0x7C, 0x64,
++	0x9C, 0xD8, 0xFB, 0xB5, 0x8E, 0xEA, 0xCE, 0x6E, 0x2F, 0xDC,
++};
++
++static const uint8_t sha11[20] = {
++	0xDD, 0x59, 0x45, 0xDB, 0x9B, 0x93, 0x07, 0x50, 0xCB, 0x39,
++	0xD0, 0x0C, 0x84, 0xDA, 0x85, 0x71, 0xFE, 0xEB, 0xF4, 0x17,
++};
++
++struct TestProfile {
++	const uint8_t* sha1;
++	enum FireRedDialogueProfile id;
++	uint32_t callback2;
++	uint32_t taskDraw;
++	uint32_t isHidden;
++	uint32_t waitAorB;
++	uint32_t taskBattle;
++	uint32_t choices[3];
++	uint32_t trainerStart;
++	uint32_t trainerEnd;
++};
++
++static const struct TestProfile profiles[] = {
++	{
++		.sha1 = sha10,
++		.id = FIRERED_DIALOGUE_PROFILE_ENGLISH_1_0,
++		.callback2 = 0x080565B4U,
++		.taskDraw = 0x08069370U,
++		.isHidden = 0x0806951CU,
++		.waitAorB = 0x0806B898U,
++		.taskBattle = 0x0807F620U,
++		.choices = { 0x0809CC98U, 0x0809CE54U, 0x0809CFDCU },
++		.trainerStart = 0x081A4EB4U,
++		.trainerEnd = 0x081A501FU,
++	},
++	{
++		.sha1 = sha11,
++		.id = FIRERED_DIALOGUE_PROFILE_ENGLISH_1_1,
++		.callback2 = 0x080565C8U,
++		.taskDraw = 0x08069384U,
++		.isHidden = 0x08069530U,
++		.waitAorB = 0x0806B8ACU,
++		.taskBattle = 0x0807F634U,
++		.choices = { 0x0809CCACU, 0x0809CE68U, 0x0809CFF0U },
++		.trainerStart = 0x081A4F2CU,
++		.trainerEnd = 0x081A5097U,
++	},
++};
++
++struct Fixture {
++	uint8_t* ewram;
++	uint8_t* iwram;
++	uint8_t* rom;
++	struct FireRedDialogueDetector detector;
++	const struct TestProfile* profile;
++	uint32_t script;
++};
++
++static void write8(uint8_t* memory, uint32_t base, uint32_t address,
++		uint8_t value) {
++	memory[address - base] = value;
++}
++
++static void write32(uint8_t* memory, uint32_t base, uint32_t address,
++		uint32_t value) {
++	size_t offset = address - base;
++	memory[offset] = (uint8_t) value;
++	memory[offset + 1] = (uint8_t) (value >> 8);
++	memory[offset + 2] = (uint8_t) (value >> 16);
++	memory[offset + 3] = (uint8_t) (value >> 24);
++}
++
++static uint32_t taskAddress(unsigned task) {
++	return TASKS + task * TASK_STRIDE;
++}
++
++static void setTask(struct Fixture* fixture, unsigned task, uint32_t function,
++		bool active) {
++	write32(fixture->iwram, IWRAM_BASE, taskAddress(task), function);
++	write8(fixture->iwram, IWRAM_BASE,
++			taskAddress(task) + TASK_ACTIVE_OFFSET, active ? 1 : 0);
++}
++
++static void setOrdinary(struct Fixture* fixture, uint8_t printerState) {
++	memset(fixture->ewram, 0, EWRAM_SIZE);
++	memset(fixture->iwram, 0, IWRAM_SIZE);
++	memset(fixture->rom, 0, ROM_SIZE);
++	write32(fixture->iwram, IWRAM_BASE, MAIN_CALLBACK2,
++			fixture->profile->callback2 | 1U);
++	write8(fixture->iwram, IWRAM_BASE, MAIN_IN_BATTLE, 0);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_STATUS, 0);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_MODE, 2);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_NATIVE,
++			fixture->profile->isHidden | 1U);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_SCRIPT, fixture->script);
++	write8(fixture->rom, ROM_BASE, fixture->script, 0x6D);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x02);
++	write8(fixture->ewram, EWRAM_BASE, MESSAGE_BOX_TYPE, 2);
++	write8(fixture->ewram, EWRAM_BASE, PRINTER_ACTIVE, 1);
++	write8(fixture->ewram, EWRAM_BASE, PRINTER_STATE, printerState);
++	setTask(fixture, 0, fixture->profile->taskDraw | 1U, true);
++	fireRedDialogueReset(&fixture->detector);
++}
++
++static void initFixture(struct Fixture* fixture,
++		const struct TestProfile* profile) {
++	memset(fixture, 0, sizeof(*fixture));
++	fixture->ewram = calloc(1, EWRAM_SIZE);
++	fixture->iwram = calloc(1, IWRAM_SIZE);
++	fixture->rom = calloc(1, ROM_SIZE);
++	assert(fixture->ewram && fixture->iwram && fixture->rom);
++	fixture->profile = profile;
++	fixture->script = ROM_BASE + 0x10000U;
++	fireRedDialogueInit(&fixture->detector, profile->id,
++			fixture->ewram, EWRAM_SIZE, fixture->iwram, IWRAM_SIZE,
++			fixture->rom, ROM_SIZE);
++	assert(fixture->detector.profile == profile->id);
++	setOrdinary(fixture, 0);
++}
++
++static void deinitFixture(struct Fixture* fixture) {
++	free(fixture->ewram);
++	free(fixture->iwram);
++	free(fixture->rom);
++}
++
++static void assertBlocked(struct Fixture* fixture) {
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_BLOCKED);
++	assert(!fixture->detector.sessionArmed);
++	fireRedDialogueConsumeTerminal(&fixture->detector);
++	assert(fixture->detector.lastState == FIRERED_DIALOGUE_BLOCKED);
++}
++
++static void testHashesAndBounds(void) {
++	uint8_t* ewram = calloc(1, EWRAM_SIZE);
++	uint8_t* iwram = calloc(1, IWRAM_SIZE);
++	uint8_t* rom = calloc(1, ROM_SIZE);
++	assert(ewram && iwram && rom);
++	struct FireRedDialogueDetector detector;
++	uint8_t unsupported[20] = { 0 };
++
++	assert(fireRedDialogueProfileFromSha1(sha10) ==
++			FIRERED_DIALOGUE_PROFILE_ENGLISH_1_0);
++	assert(fireRedDialogueProfileFromSha1(sha11) ==
++			FIRERED_DIALOGUE_PROFILE_ENGLISH_1_1);
++	assert(fireRedDialogueProfileFromSha1(NULL) ==
++			FIRERED_DIALOGUE_PROFILE_UNSUPPORTED);
++	assert(fireRedDialogueProfileFromSha1(unsupported) ==
++			FIRERED_DIALOGUE_PROFILE_UNSUPPORTED);
++	assert(!fireRedDialogueProfileSupported(FIRERED_DIALOGUE_PROFILE_UNSUPPORTED));
++	assert(fireRedDialogueProfileSupported(FIRERED_DIALOGUE_PROFILE_ENGLISH_1_0));
++	assert(fireRedDialogueProfileSupported(FIRERED_DIALOGUE_PROFILE_ENGLISH_1_1));
++	assert(!fireRedDialogueProfileSupported((enum FireRedDialogueProfile) 99));
++	assert(fireRedDialogueInspect(NULL) == FIRERED_DIALOGUE_BLOCKED);
++	fireRedDialogueReset(NULL);
++	fireRedDialogueConsumeTerminal(NULL);
++
++	fireRedDialogueInit(NULL, FIRERED_DIALOGUE_PROFILE_ENGLISH_1_0,
++			ewram, EWRAM_SIZE, iwram, IWRAM_SIZE, rom, ROM_SIZE);
++	fireRedDialogueInit(&detector, FIRERED_DIALOGUE_PROFILE_UNSUPPORTED,
++			ewram, EWRAM_SIZE, iwram, IWRAM_SIZE, rom, ROM_SIZE);
++	assert(detector.profile == FIRERED_DIALOGUE_PROFILE_UNSUPPORTED);
++	fireRedDialogueInit(&detector, FIRERED_DIALOGUE_PROFILE_ENGLISH_1_0,
++			NULL, EWRAM_SIZE, iwram, IWRAM_SIZE, rom, ROM_SIZE);
++	assert(detector.profile == FIRERED_DIALOGUE_PROFILE_UNSUPPORTED);
++	fireRedDialogueInit(&detector, FIRERED_DIALOGUE_PROFILE_ENGLISH_1_0,
++			ewram, 1, iwram, IWRAM_SIZE, rom, ROM_SIZE);
++	assert(detector.profile == FIRERED_DIALOGUE_PROFILE_UNSUPPORTED);
++	fireRedDialogueInit(&detector, FIRERED_DIALOGUE_PROFILE_ENGLISH_1_0,
++			ewram, EWRAM_SIZE, iwram, 1, rom, ROM_SIZE);
++	assert(detector.profile == FIRERED_DIALOGUE_PROFILE_UNSUPPORTED);
++	fireRedDialogueInit(&detector, FIRERED_DIALOGUE_PROFILE_ENGLISH_1_0,
++			ewram, EWRAM_SIZE, iwram, IWRAM_SIZE, rom, 1);
++	assert(detector.profile == FIRERED_DIALOGUE_PROFILE_UNSUPPORTED);
++
++	free(ewram);
++	free(iwram);
++	free(rom);
++}
++
++static void testAllPrinterStates(struct Fixture* fixture) {
++	static const uint8_t printing[] = { 0, 4, 5, 6 };
++	static const uint8_t waiting[] = { 1, 2, 3 };
++	for (size_t i = 0; i < sizeof(printing); ++i) {
++		setOrdinary(fixture, printing[i]);
++		assert(fireRedDialogueInspect(&fixture->detector) ==
++				FIRERED_DIALOGUE_PRINTING);
++		assert(fixture->detector.sessionArmed);
++	}
++	for (size_t i = 0; i < sizeof(waiting); ++i) {
++		setOrdinary(fixture, waiting[i]);
++		assert(fireRedDialogueInspect(&fixture->detector) ==
++				FIRERED_DIALOGUE_PAGE_WAIT);
++		assert(fixture->detector.sessionArmed);
++	}
++	setOrdinary(fixture, 7);
++	assertBlocked(fixture);
++}
++
++static void testEveryOrdinaryGuard(struct Fixture* fixture) {
++	setOrdinary(fixture, 0);
++	write32(fixture->iwram, IWRAM_BASE, MAIN_CALLBACK2,
++			fixture->profile->callback2 + 4U);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->iwram, IWRAM_BASE, MAIN_IN_BATTLE, 0x02);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_STATUS, 1);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_MODE, 1);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_NATIVE,
++			fixture->profile->isHidden + 4U);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_SCRIPT, ROM_BASE - 1U);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_SCRIPT,
++			ROM_BASE + ROM_SIZE);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script, 0x6C);
++	assertBlocked(fixture);
++
++	/* Text directly preceding gameplay, a choice, or an unknown continuation
++	 * is never armed even before the forbidden task/battle itself exists. */
++	static const uint8_t unsafeContinuations[] = {
++		0x00, /* nop/unknown continuation */
++		0x16, /* setvar */
++		0x25, /* special (including scripted legendary starts) */
++		0x29, /* setflag */
++		0x5C, /* trainerbattle */
++		0x5D, /* dotrainerbattle */
++		0x6E, /* yesnobox */
++		0x6F, /* multichoice */
++		0x70, /* multichoicedefault */
++		0x71, /* multichoicegrid */
++	};
++	for (size_t i = 0;
++			i < sizeof(unsafeContinuations) / sizeof(*unsafeContinuations); ++i) {
++		setOrdinary(fixture, 0);
++		write8(fixture->rom, ROM_BASE, fixture->script + 1U,
++				unsafeContinuations[i]);
++		assertBlocked(fixture);
++	}
++
++	/* A callstd message is accepted only if every nested return path closes and
++	 * terminates. A dangerous caller continuation fails closed. */
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x03);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_STACK_DEPTH, 2);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_STACK + 4U,
++			fixture->script + 0x20U);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_STACK,
++			fixture->script + 0x40U);
++	write8(fixture->rom, ROM_BASE, fixture->script + 0x20U, 0x6C);
++	write8(fixture->rom, ROM_BASE, fixture->script + 0x21U, 0x03);
++	write8(fixture->rom, ROM_BASE, fixture->script + 0x40U, 0x02);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_PRINTING);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x03);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_STACK_DEPTH, 1);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_STACK,
++			fixture->script + 0x20U);
++	write8(fixture->rom, ROM_BASE, fixture->script + 0x20U, 0x5C);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_STACK_DEPTH, 20);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x03);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_STACK_DEPTH, 1);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_STACK, ROM_BASE - 1U);
++	assertBlocked(fixture);
++
++	/* Even a syntactically harmless but corrupt non-terminating continuation is
++	 * bounded and rejected instead of being followed indefinitely. */
++	setOrdinary(fixture, 0);
++	for (unsigned offset = 1; offset < 64; ++offset) {
++		write8(fixture->rom, ROM_BASE, fixture->script + offset, 0x6C);
++	}
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->ewram, EWRAM_BASE, MESSAGE_BOX_TYPE, 3);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->ewram, EWRAM_BASE, PRINTER_ACTIVE, 0);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	setTask(fixture, 0, fixture->profile->taskDraw, false);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_SCRIPT,
++			fixture->profile->trainerStart);
++	write8(fixture->rom, ROM_BASE, fixture->profile->trainerStart, 0x6D);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_SCRIPT,
++			fixture->profile->trainerEnd - 1U);
++	write8(fixture->rom, ROM_BASE, fixture->profile->trainerEnd - 1U, 0x6D);
++	assertBlocked(fixture);
++
++	/* The exclusive end of the trainer range is not itself blocked. */
++	setOrdinary(fixture, 0);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_SCRIPT,
++			fixture->profile->trainerEnd);
++	write8(fixture->rom, ROM_BASE, fixture->profile->trainerEnd, 0x6D);
++	write8(fixture->rom, ROM_BASE, fixture->profile->trainerEnd + 1U, 0x02);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_PRINTING);
++
++	setOrdinary(fixture, 0);
++	setTask(fixture, 1, fixture->profile->taskBattle | 1U, true);
++	assertBlocked(fixture);
++
++	for (unsigned choice = 0; choice < 3; ++choice) {
++		setOrdinary(fixture, 0);
++		setTask(fixture, choice + 1, fixture->profile->choices[choice] | 1U,
++				true);
++		assertBlocked(fixture);
++	}
++
++	/* Inactive task slots do not inherit stale function pointers. */
++	setOrdinary(fixture, 0);
++	setTask(fixture, 1, fixture->profile->taskBattle | 1U, false);
++	setTask(fixture, 2, fixture->profile->choices[0] | 1U, false);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_PRINTING);
++}
++
++static void setHiddenTerminal(struct Fixture* fixture) {
++	write8(fixture->ewram, EWRAM_BASE, MESSAGE_BOX_TYPE, 0);
++	write8(fixture->ewram, EWRAM_BASE, PRINTER_ACTIVE, 0);
++	setTask(fixture, 0, fixture->profile->taskDraw | 1U, false);
++}
++
++static void testTerminalSequence(struct Fixture* fixture) {
++	setOrdinary(fixture, 0);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_PRINTING);
++	setHiddenTerminal(fixture);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_TERMINAL_PENDING);
++	/* Re-reading within one emulated frame is stable. */
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_TERMINAL_PENDING);
++
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_MODE, 1);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_TERMINAL_PENDING);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_TERMINAL_PENDING);
++
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_MODE, 2);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_NATIVE,
++			fixture->profile->waitAorB | 1U);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_SCRIPT, fixture->script + 1U);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_TERMINAL_WAIT);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_TERMINAL_WAIT);
++	fireRedDialogueConsumeTerminal(&fixture->detector);
++	assert(!fixture->detector.sessionArmed);
++	fireRedDialogueConsumeTerminal(&fixture->detector);
++	assert(!fixture->detector.sessionArmed);
++	assertBlocked(fixture);
++
++	/* Reset preserves the selected profile and cached memory pointers. */
++	setOrdinary(fixture, 2);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_PAGE_WAIT);
++}
++
++static void testTerminalFailClosed(struct Fixture* fixture) {
++	/* None of the three terminal shapes are accepted without an armed message. */
++	setOrdinary(fixture, 0);
++	setHiddenTerminal(fixture);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	setHiddenTerminal(fixture);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_MODE, 1);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	setHiddenTerminal(fixture);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_NATIVE,
++			fixture->profile->waitAorB | 1U);
++	assertBlocked(fixture);
++
++	/* Skipping a required progression stage disarms the detector. */
++	setOrdinary(fixture, 0);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_PRINTING);
++	setHiddenTerminal(fixture);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_NATIVE,
++			fixture->profile->waitAorB | 1U);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_SCRIPT, fixture->script + 1U);
++	assertBlocked(fixture);
++
++	/* Even an otherwise verified terminal wait needs a bounded ROM pointer. */
++	setOrdinary(fixture, 0);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_PRINTING);
++	setHiddenTerminal(fixture);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_TERMINAL_PENDING);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_MODE, 1);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_TERMINAL_PENDING);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_MODE, 2);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_NATIVE,
++			fixture->profile->waitAorB | 1U);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_SCRIPT,
++			ROM_BASE + ROM_SIZE);
++	assertBlocked(fixture);
++
++	/* A choice or battle transition appearing after arming also disarms it. */
++	setOrdinary(fixture, 0);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_PRINTING);
++	setTask(fixture, 1, fixture->profile->choices[1] | 1U, true);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_PRINTING);
++	setTask(fixture, 1, fixture->profile->taskBattle | 1U, true);
++	assertBlocked(fixture);
++}
++
++int main(void) {
++	testHashesAndBounds();
++	for (size_t revision = 0;
++			revision < sizeof(profiles) / sizeof(*profiles); ++revision) {
++		struct Fixture fixture;
++		initFixture(&fixture, &profiles[revision]);
++		testAllPrinterStates(&fixture);
++		testEveryOrdinaryGuard(&fixture);
++		testTerminalSequence(&fixture);
++		testTerminalFailClosed(&fixture);
++		deinitFixture(&fixture);
++	}
++	return 0;
++}
 diff --git a/tests/libretro_multi_support_test.c b/tests/libretro_multi_support_test.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..f153873e7eabb325d855507597cd060afa57397a
+index 0000000..cc75d0d
 --- /dev/null
 +++ b/tests/libretro_multi_support_test.c
-@@ -0,0 +1,309 @@
+@@ -0,0 +1,350 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -2299,6 +3737,46 @@ index 0000000000000000000000000000000000000000..f153873e7eabb325d855507597cd060a
 +	assert(!speed[1].enabled && speed[2].enabled);
 +}
 +
++static void testDialogueOptionsAndL2Edges(void) {
++	for (unsigned multiplier = 5; multiplier <= 20; ++multiplier) {
++		char value[4];
++		if (multiplier < 10) {
++			value[0] = (char) ('0' + multiplier);
++			value[1] = 'x';
++			value[2] = '\0';
++		} else {
++			value[0] = (char) ('0' + multiplier / 10);
++			value[1] = (char) ('0' + multiplier % 10);
++			value[2] = 'x';
++			value[3] = '\0';
++		}
++		assert(multiDialogueParseTarget(value) == multiplier * 10);
++	}
++	static const char* invalid[] = {
++		"", "4x", "21x", "10", "10.0x", "010x", "10X", " 10x", "10x ", "fast",
++	};
++	assert(multiDialogueParseTarget(NULL) == MULTI_DIALOGUE_DEFAULT_TENTHS);
++	for (size_t i = 0; i < sizeof(invalid) / sizeof(*invalid); ++i) {
++		assert(multiDialogueParseTarget(invalid[i]) == MULTI_DIALOGUE_DEFAULT_TENTHS);
++	}
++
++	struct MultiDialogueToggleState state;
++	multiDialogueToggleInit(&state);
++	assert(!state.enabled && !state.buttonDown);
++	assert(multiDialogueHandleL2(&state, true, true) == MULTI_DIALOGUE_TOGGLE_ENABLED);
++	assert(state.enabled && state.buttonDown);
++	assert(multiDialogueHandleL2(&state, true, true) == MULTI_DIALOGUE_TOGGLE_NONE);
++	assert(multiDialogueHandleL2(&state, false, true) == MULTI_DIALOGUE_TOGGLE_NONE);
++	assert(multiDialogueHandleL2(&state, true, true) == MULTI_DIALOGUE_TOGGLE_DISABLED);
++	assert(!state.enabled);
++	assert(multiDialogueHandleL2(&state, false, true) == MULTI_DIALOGUE_TOGGLE_NONE);
++	assert(multiDialogueHandleL2(&state, true, false) == MULTI_DIALOGUE_TOGGLE_UNAVAILABLE);
++	assert(!state.enabled);
++	assert(multiDialogueHandleL2(&state, true, true) == MULTI_DIALOGUE_TOGGLE_NONE);
++	assert(multiDialogueHandleL2(&state, false, true) == MULTI_DIALOGUE_TOGGLE_NONE);
++	assert(multiDialogueHandleL2(&state, true, true) == MULTI_DIALOGUE_TOGGLE_ENABLED);
++}
++
 +static void testAudioRoutes(void) {
 +	assert(multiAudioParseMode(NULL) == MULTI_AUDIO_PLAYER_1);
 +	assert(multiAudioParseMode("Player 1") == MULTI_AUDIO_PLAYER_1);
@@ -2422,6 +3900,7 @@ index 0000000000000000000000000000000000000000..f153873e7eabb325d855507597cd060a
 +	testEverySpeedSchedule();
 +	testSpeedStateAndR2Edges();
 +	testIndependentSpeedStates();
++	testDialogueOptionsAndL2Edges();
 +	testAudioRoutes();
 +	testExactAudioClock();
 +	testBoundedAudioFifo();

@@ -215,6 +215,12 @@ xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror \
   "$mgba_dir/src/platform/libretro/libretro_multi_support.c" \
   -o "$host_test_dir/libretro_audio_test"
 "$host_test_dir/libretro_audio_test"
+xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror \
+  -I "$mgba_dir/src/platform/libretro" \
+  "$mgba_dir/tests/libretro_firered_dialogue_test.c" \
+  "$mgba_dir/src/platform/libretro/libretro_firered_dialogue.c" \
+  -o "$host_test_dir/libretro_firered_dialogue_test"
+"$host_test_dir/libretro_firered_dialogue_test"
 
 core_build="$build_root/mgba-tvos-build"
 derived_data="$build_root/RetroArchTV-DerivedData"
@@ -319,8 +325,13 @@ for required_core_string in \
   mgba_multi_speed_p1 \
   mgba_multi_speed_p2 \
   mgba_multi_speed_p3 \
+  mgba_multi_dialogue_speed \
+  mgba_multi_dialogue_auto_advance \
   'Audio output; Player 1|Player 2|Player 3|Disabled' \
-  'Toggle Speed'; do
+  'FireRed dialogue speed (L2 toggle)' \
+  'FireRed dialogue auto-advance; Enabled|Disabled' \
+  'Toggle Speed' \
+  'Toggle FireRed Dialogue Assist'; do
   grep -F "$required_core_string" <<<"$core_strings" >/dev/null ||
     fail "mGBA Multi is missing required runtime feature: $required_core_string"
 done
@@ -453,6 +464,20 @@ rm -f -- "$ipa_path" "$dist_dir/SHA256SUMS.txt" "$dist_dir/BUILD-MANIFEST.txt"
   printf 'speed_step_tenths=1\n'
   printf 'audio_output=single_instance_or_disabled\n'
   printf 'audio_mix=false\n'
+  printf 'firered_dialogue_assist=true\n'
+  printf 'dialogue_assist_per_instance=true\n'
+  printf 'dialogue_toggle=L2\n'
+  printf 'dialogue_speed_min=5\n'
+  printf 'dialogue_speed_default=10\n'
+  printf 'dialogue_speed_max=20\n'
+  printf 'dialogue_speed_step=1\n'
+  printf 'dialogue_auto_advance_configurable=true\n'
+  printf 'dialogue_supported_rom_sha1=41cb23d8dccc8ebd7c649cd8fbb58eeace6e2fdc,dd5945db9b930750cb39d00c84da8571feebf417\n'
+  printf 'dialogue_unknown_rom_fail_closed=true\n'
+  printf 'dialogue_post_message_path_fail_closed=true\n'
+  printf 'dialogue_battles_blocked=true\n'
+  printf 'dialogue_choices_blocked=true\n'
+  printf 'dialogue_detector_tests=true\n'
   printf 'subsystems=false\n'
   printf 'savestates=false\n'
   printf 'stock_control_core=false\n'
