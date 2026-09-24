@@ -203,10 +203,25 @@ if [ "$(uname -s)" = "Darwin" ]; then
   core_strings="$(strings "$core_binary")" ||
     fail "could not inspect the mGBA Multi strings"
   if grep -Ei \
-    'mgba_multi_link|mgba_link_[23]|Local link cable|threaded link|mgba_multi_speed|speed target|Toggle individual speed|mgba_multi_audio|mgba_multi_[23]|Load Subsystem|mGBA Multi \(2 ROMs\)|mGBA Multi \(3 ROMs\)' \
+    'mgba_multi_link|mgba_link_[23]|Local link cable|threaded link|mgba_multi_[23]|Load Subsystem|mGBA Multi \(2 ROMs\)|mGBA Multi \(3 ROMs\)' \
     <<<"$core_strings" >/dev/null; then
-    fail "mGBA Multi contains removed link, speed, or subsystem features"
+    fail "mGBA Multi contains removed link or subsystem features"
   fi
+  if grep -E '(^|[^[:alnum:]_])mgba_multi_speed([^[:alnum:]_]|$)' \
+      <<<"$core_strings" >/dev/null ||
+      grep -F 'Toggle individual speed' <<<"$core_strings" >/dev/null; then
+    fail "mGBA Multi contains the removed shared speed control"
+  fi
+  for required_core_string in \
+    mgba_multi_audio \
+    mgba_multi_speed_p1 \
+    mgba_multi_speed_p2 \
+    mgba_multi_speed_p3 \
+    'Audio output; Player 1|Player 2|Player 3|Disabled' \
+    'Toggle Speed'; do
+    grep -F "$required_core_string" <<<"$core_strings" >/dev/null ||
+      fail "mGBA Multi is missing required runtime feature: $required_core_string"
+  done
 
   framework_count=0
   while IFS= read -r -d '' framework_path; do

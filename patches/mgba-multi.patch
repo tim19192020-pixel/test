@@ -150,11 +150,11 @@ index 9d528e790ed3aabcfba77c0c3dedd9b80b6410fa..0193fe4cab0b04e3149fb74bb129befe
  	message(STATUS "	Shared: ${BUILD_SHARED}")
 diff --git a/README_MULTI_LIBRETRO.md b/README_MULTI_LIBRETRO.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..af31840c84cc229e406e9befb4615dfbf3512a4e
+index 0000000000000000000000000000000000000000..d86aec4a3f3d1ac947cce1c566ddbc89384e2e27
 --- /dev/null
 +++ b/README_MULTI_LIBRETRO.md
-@@ -0,0 +1,107 @@
-+# mGBA Multi 0.1.0
+@@ -0,0 +1,123 @@
++# mGBA Multi 0.2.0
 +
 +This is a deliberately small, linkless libretro frontend built directly on
 +upstream mGBA. It runs one selected GBA ROM in one, two, or three independent
@@ -172,17 +172,29 @@ index 0000000000000000000000000000000000000000..af31840c84cc229e406e9befb4615dfb
 +  has 128 KiB plus a canonical 16-byte RTC trailer, so changing the visible
 +  count never renames or shifts a player's save. The frontend mirrors mGBA's
 +  save-type-specific RTC location (8, 64, or 128 KiB) into that fixed trailer.
-+- Version 0.1.0 intentionally has no link cable, speed controls, subsystems,
-+  savestates, frameskip, sensors, or background file writes.
++- Version 0.2.0 intentionally has no link cable, subsystems, savestates,
++  user-configurable frameskip, sensors, or background file writes.
++- `Audio output` selects Player 1 (the default), Player 2, or Player 3, or
++  disables audible output. Selecting a player that is not active produces
++  silence rather than changing identity.
++- Each player has an independent speed target from 1.0x through 4.0x in 0.1x
++  increments (default target 2.0x). R2 on that player's controller toggles only
++  that instance between 1.0x and its target. All players start at 1.0x whenever
++  content is loaded.
 +
 +## Execution model
 +
 +One-instance mode uses the same direct `runFrame()` path as the stock core.
 +For two or three instances, Player 1 remains on libretro's caller thread while
-+Players 2 and 3 each have one persistent owner pthread. A generation contains
-+exactly one frame per instance. The caller waits at a fixed barrier before it
-+reads video/audio memory, invokes a frontend callback, or returns. There is no
-+free-running producer, catch-up loop, or work queue that can grow over time.
++Players 2 and 3 each have one persistent owner pthread. The caller waits at a
++fixed barrier before it reads video/audio memory, invokes a frontend callback,
++or returns. At normal speed, a generation contains exactly one frame per
++instance. Acceleration uses
++an integer tenths accumulator and loops a bounded one to four frames inside the
++same generation; it never dispatches extra jobs. Intermediate accelerated
++frames skip only software rendering, while the final frame is always rendered.
++There is no free-running producer, catch-up loop, or work queue that can grow
++over time.
 +
 +This differs intentionally from mGBA's `mCoreThread`, which is a continuously
 +running GUI-oriented controller with its own audio/video synchronization. It
@@ -191,7 +203,7 @@ index 0000000000000000000000000000000000000000..af31840c84cc229e406e9befb4615dfb
 +sub-frame lockstep. Independent linkless instances do not have that dependency.
 +
 +Workers never invoke libretro callbacks or perform file I/O. They only apply a
-+copied key mask and execute one `runFrame()` (or an explicit reset command).
++copied key mask and execute their bounded frame count (or an explicit reset).
 +tvOS chooses the physical A12 cores; the frontend does not use hard CPU
 +affinity or force a QoS class. Instances share one immutable ROM backing through
 +independent VFile cursors; mGBA's built-in copy-on-write path gives an instance
@@ -203,19 +215,23 @@ index 0000000000000000000000000000000000000000..af31840c84cc229e406e9befb4615dfb
 +boot. The frontend therefore keeps the upstream converter for every instance
 +and always advertises one fixed 65,536 Hz stream. A per-instance mAVStream hook
 +drains old-rate samples on the instance's owner thread before changing the
-+converter rate. Every native audio buffer is also completely drained after each
-+frame, including silent or temporarily short producers.
++converter rate. Only the selected instance is converted; unselected native
++buffers are cleared without copying. During acceleration, the selected stream
++is resampled by the exact configured speed ratio while the frontend cadence
++remains unchanged. Every accelerated subframe is drained or cleared before the
++next one, so the fixed native rings cannot accumulate data.
 +
 +The output frame count uses an exact rational accumulator:
 +
 +`65536 * frameCycles / frequency`
 +
 +This produces the repeating 1097/1098 cadence without rounding drift. Each
-+normalized FIFO is fixed at 4096 stereo frames. Missing samples are zero-filled;
-+oldest samples are discarded at a 32-frame lead bound as well as at the hard
-+capacity. The cadence advances even when no frontend audio callback is present,
-+and a partial callback never creates retry debt. Audio is never gated on the
-+shortest producer, dynamically reallocated, or allowed to create backpressure.
++selected FIFO is fixed at 8192 stereo frames. Missing samples are zero-filled;
++oldest samples are discarded at a bounded lead as well as at the hard capacity.
++Disabled audio still submits the exact-count silent stream, preserving
++RetroArch's audio pacing. The cadence advances even when no frontend callback
++is present, and a partial callback never creates retry debt. Audio is never
++dynamically reallocated or allowed to create backpressure.
 +
 +## Build
 +
@@ -261,12 +277,133 @@ index 0000000000000000000000000000000000000000..af31840c84cc229e406e9befb4615dfb
 +ports remain isolated, memory/audio depth stay flat for 30–60 minutes, and
 +parallel execution lowers the multi-instance frame-time tail without thermal
 +collapse.
+diff --git a/src/platform/libretro/libretro-audio.c b/src/platform/libretro/libretro-audio.c
+index 28d7544cd6a6f724baadb52162c840423e60a615..62ae234fb4e85ae3b8724a1554076cfa7f632a36 100644
+--- a/src/platform/libretro/libretro-audio.c
++++ b/src/platform/libretro/libretro-audio.c
+@@ -7,6 +7,15 @@
+ 
+ #include <string.h>
+ 
++static uint64_t _audioGcd(uint64_t a, uint64_t b) {
++	while (b) {
++		uint64_t remainder = a % b;
++		a = b;
++		b = remainder;
++	}
++	return a;
++}
++
+ void audioConverterReset(struct LibretroAudioConverter* conv, unsigned inputRate) {
+ 	conv->inputRate = inputRate;
+ 	conv->prevLeft = 0;
+@@ -17,6 +26,9 @@ void audioConverterReset(struct LibretroAudioConverter* conv, unsigned inputRate
+ 	conv->accCount = 0;
+ 	conv->factor = 1;
+ 	conv->phase = 0;
++	conv->scaledPhase = 0;
++	conv->phaseStep = 0;
++	conv->phaseLimit = 0;
+ 	switch (inputRate) {
+ 	case GBA_OUTPUT_RATE / 2:
+ 		conv->mode = CONV_UPSAMPLE;
+@@ -39,6 +51,28 @@ void audioConverterReset(struct LibretroAudioConverter* conv, unsigned inputRate
+ 	}
+ }
+ 
++void audioConverterResetScaled(struct LibretroAudioConverter* conv, unsigned inputRate, unsigned speedTenths) {
++	if (speedTenths < 10) {
++		speedTenths = 10;
++	} else if (speedTenths > 40) {
++		speedTenths = 40;
++	}
++
++	/* Keep the normal-speed fast paths and their exact sample behavior. */
++	if (speedTenths == 10 || !inputRate) {
++		audioConverterReset(conv, inputRate);
++		return;
++	}
++
++	audioConverterReset(conv, inputRate);
++	conv->mode = CONV_RESAMPLE_SCALED;
++	conv->phaseStep = (uint64_t) inputRate * speedTenths;
++	conv->phaseLimit = (uint64_t) GBA_OUTPUT_RATE * 10;
++	uint64_t divisor = _audioGcd(conv->phaseStep, conv->phaseLimit);
++	conv->phaseStep /= divisor;
++	conv->phaseLimit /= divisor;
++}
++
+ size_t audioConverterProcess(struct LibretroAudioConverter* conv, const int16_t* in, size_t nFrames, int16_t* out) {
+ 	size_t i;
+ 	size_t outFrames = 0;
+@@ -106,5 +140,32 @@ size_t audioConverterProcess(struct LibretroAudioConverter* conv, const int16_t*
+ 		}
+ 		return outFrames;
+ 	}
++	case CONV_RESAMPLE_SCALED: {
++		/* Effective input rate/output rate is stored as a reduced ratio. */
++		size_t outCapacity = nFrames * 2;
++		for (i = 0; i < nFrames; ++i) {
++			int16_t left = in[i * 2];
++			int16_t right = in[i * 2 + 1];
++			if (!conv->havePrev) {
++				conv->prevLeft = left;
++				conv->prevRight = right;
++				conv->havePrev = true;
++			}
++			while (conv->scaledPhase < conv->phaseLimit) {
++				if (outFrames < outCapacity) {
++					int64_t leftDelta = (int64_t) (left - conv->prevLeft) * conv->scaledPhase;
++					int64_t rightDelta = (int64_t) (right - conv->prevRight) * conv->scaledPhase;
++					out[outFrames * 2] = (int16_t) (conv->prevLeft + leftDelta / (int64_t) conv->phaseLimit);
++					out[outFrames * 2 + 1] = (int16_t) (conv->prevRight + rightDelta / (int64_t) conv->phaseLimit);
++					++outFrames;
++				}
++				conv->scaledPhase += conv->phaseStep;
++			}
++			conv->scaledPhase -= conv->phaseLimit;
++			conv->prevLeft = left;
++			conv->prevRight = right;
++		}
++		return outFrames;
++	}
+ 	}
+ }
+diff --git a/src/platform/libretro/libretro-audio.h b/src/platform/libretro/libretro-audio.h
+index 02d2a229980fc3ce34b74d191935852b3caeb1d5..1c10e40905eca194b1ea33e78d8b8deceec9c66f 100644
+--- a/src/platform/libretro/libretro-audio.h
++++ b/src/platform/libretro/libretro-audio.h
+@@ -16,7 +16,8 @@ enum LibretroAudioMode {
+ 	CONV_PASSTHROUGH,
+ 	CONV_UPSAMPLE,
+ 	CONV_DOWNSAMPLE,
+-	CONV_RESAMPLE
++	CONV_RESAMPLE,
++	CONV_RESAMPLE_SCALED
+ };
+ 
+ struct LibretroAudioConverter {
+@@ -33,9 +34,14 @@ struct LibretroAudioConverter {
+ 	unsigned factor; // downsample ratio (2 or 4)
+ 	// generic resample state
+ 	uint32_t phase;
++	// exact rational speed-scaled resample state
++	uint64_t scaledPhase;
++	uint64_t phaseStep;
++	uint64_t phaseLimit;
+ };
+ 
+ void audioConverterReset(struct LibretroAudioConverter* conv, unsigned inputRate);
++void audioConverterResetScaled(struct LibretroAudioConverter* conv, unsigned inputRate, unsigned speedTenths);
+ size_t audioConverterProcess(struct LibretroAudioConverter* conv, const int16_t* in, size_t nFrames, int16_t* out);
+ 
+ #endif
 diff --git a/src/platform/libretro/libretro_multi.c b/src/platform/libretro/libretro_multi.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778edaccb1311
+index 0000000000000000000000000000000000000000..dfdb4e01fcc4001697a9dc90eaaafbba88dd4d9e
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi.c
-@@ -0,0 +1,918 @@
+@@ -0,0 +1,1088 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -276,11 +413,10 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +/*
 + * Minimal, linkless multi-instance libretro frontend.
 + *
-+ * There is deliberately no link emulation, fast-forward, run-ahead queue,
-+ * wall-clock pacing, per-frame allocation, or file I/O here. Player 1 runs
-+ * on the libretro caller. Players 2 and 3 each keep one persistent owner
-+ * pthread. Every retro_run dispatches at most one frame generation and waits
-+ * for all instances before touching their audio/video buffers or returning.
++ * There is deliberately no link emulation, run-ahead queue, wall-clock pacing,
++ * per-frame allocation, or file I/O here. Player 1 runs on the libretro caller.
++ * Players 2 and 3 each keep one persistent owner pthread. Every retro_run uses
++ * one bounded generation and one barrier, including per-instance acceleration.
 + */
 +
 +#include "libretro.h"
@@ -319,7 +455,7 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +#error "The barebones multi-instance core requires the GBA core"
 +#endif
 +
-+#define MULTI_FRONTEND_VERSION "0.1.0"
++#define MULTI_FRONTEND_VERSION "0.2.0"
 +#define VIDEO_STRIDE 256
 +#define VIDEO_HEIGHT_MAX 224
 +#define VIDEO_BUFFER_PIXELS (VIDEO_STRIDE * VIDEO_HEIGHT_MAX)
@@ -332,7 +468,7 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +#define AUDIO_RAW_CHUNK_FRAMES 1024
 +#define AUDIO_CONVERTED_CHUNK_FRAMES (AUDIO_RAW_CHUNK_FRAMES * 2)
 +#define AUDIO_OUTPUT_MAX_FRAMES 2048
-+#define AUDIO_FIFO_MAX_LEAD 32
++#define AUDIO_FIFO_MAX_LEAD AUDIO_OUTPUT_MAX_FRAMES
 +
 +/* mGBA places its RTC trailer immediately after the game's actual save type,
 + * which may be 8 KiB, 64 KiB, or 128 KiB. We mirror it into the final 16 bytes
@@ -354,6 +490,8 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +	struct mAVStream stream;
 +	struct LibretroAudioConverter converter;
 +	struct MultiAudioFifo audio;
++	bool captureAudio;
++	unsigned audioSpeedTenths;
 +	int16_t rawAudio[AUDIO_RAW_CHUNK_FRAMES * 2];
 +	int16_t convertedAudio[AUDIO_CONVERTED_CHUNK_FRAMES * 2];
 +};
@@ -378,6 +516,8 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +static bool deferredSetup;
 +static bool fatalLoadError;
 +static bool useBitmasks;
++static enum MultiAudioMode audioMode = MULTI_AUDIO_PLAYER_1;
++static struct MultiSpeedState speedState[MULTI_MAX_INSTANCES];
 +
 +static void* romData;
 +static size_t romSize;
@@ -393,6 +533,7 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +static pthread_cond_t workerDone = PTHREAD_COND_INITIALIZER;
 +static enum MultiWorkerCommand workerCommand;
 +static uint16_t workerKeys[MULTI_MAX_INSTANCES];
++static unsigned workerFrameSteps[MULTI_MAX_INSTANCES];
 +static uint64_t workerGeneration;
 +static unsigned workerPending;
 +static bool workerStop;
@@ -401,6 +542,7 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +static struct mLogger silentLogger;
 +
 +static void _drainInstanceAudio(struct MultiInstance* instance);
++static void _captureOrDiscardInstanceAudio(struct MultiInstance* instance);
 +
 +static const int keymap[] = {
 +	RETRO_DEVICE_ID_JOYPAD_A,
@@ -418,6 +560,10 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +static const struct retro_variable coreVariables[] = {
 +	{ "mgba_multi_instances", "Instances (restart content); 3|2|1" },
 +	{ "mgba_multi_execution", "Execution (restart content); Parallel|Sequential" },
++	{ "mgba_multi_audio", "Audio output; Player 1|Player 2|Player 3|Disabled" },
++	{ "mgba_multi_speed_p1", "Player 1 speed target (R2 toggle); 2.0x|1.0x|1.1x|1.2x|1.3x|1.4x|1.5x|1.6x|1.7x|1.8x|1.9x|2.1x|2.2x|2.3x|2.4x|2.5x|2.6x|2.7x|2.8x|2.9x|3.0x|3.1x|3.2x|3.3x|3.4x|3.5x|3.6x|3.7x|3.8x|3.9x|4.0x" },
++	{ "mgba_multi_speed_p2", "Player 2 speed target (R2 toggle); 2.0x|1.0x|1.1x|1.2x|1.3x|1.4x|1.5x|1.6x|1.7x|1.8x|1.9x|2.1x|2.2x|2.3x|2.4x|2.5x|2.6x|2.7x|2.8x|2.9x|3.0x|3.1x|3.2x|3.3x|3.4x|3.5x|3.6x|3.7x|3.8x|3.9x|4.0x" },
++	{ "mgba_multi_speed_p3", "Player 3 speed target (R2 toggle); 2.0x|1.0x|1.1x|1.2x|1.3x|1.4x|1.5x|1.6x|1.7x|1.8x|1.9x|2.1x|2.2x|2.3x|2.4x|2.5x|2.6x|2.7x|2.8x|2.9x|3.0x|3.1x|3.2x|3.3x|3.4x|3.5x|3.6x|3.7x|3.8x|3.9x|4.0x" },
 +	{ NULL, NULL },
 +};
 +
@@ -458,8 +604,8 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +	/* GBAAudioWriteSOUNDBIAS emits every old-rate sample before this callback.
 +	 * Drain those samples with the old converter, then start a clean converter
 +	 * at the new hardware rate. Each callback touches only its owning instance. */
-+	_drainInstanceAudio(instance);
-+	audioConverterReset(&instance->converter, rate);
++	_captureOrDiscardInstanceAudio(instance);
++	audioConverterResetScaled(&instance->converter, rate, instance->audioSpeedTenths);
 +}
 +
 +static const char* _getVariable(const char* key) {
@@ -484,6 +630,43 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +static bool _parallelRequested(void) {
 +	const char* value = _getVariable("mgba_multi_execution");
 +	return !value || strcmp(value, "Sequential") != 0;
++}
++
++static unsigned _requestedSpeedTenths(unsigned player) {
++	static const char* keys[MULTI_MAX_INSTANCES] = {
++		"mgba_multi_speed_p1",
++		"mgba_multi_speed_p2",
++		"mgba_multi_speed_p3",
++	};
++	if (player >= MULTI_MAX_INSTANCES) {
++		return MULTI_SPEED_ONE;
++	}
++	const char* value = _getVariable(keys[player]);
++	return value ? multiSpeedParseTarget(value) : MULTI_SPEED_DEFAULT;
++}
++
++static enum MultiAudioMode _requestedAudioMode(void) {
++	return multiAudioParseMode(_getVariable("mgba_multi_audio"));
++}
++
++static unsigned _effectiveAudioSpeed(unsigned player) {
++	return player < MULTI_MAX_INSTANCES ? multiSpeedEffectiveTenths(&speedState[player]) :
++			MULTI_SPEED_ONE;
++}
++
++static void _initializeRuntimeSettings(void) {
++	audioMode = _requestedAudioMode();
++	for (unsigned i = 0; i < MULTI_MAX_INSTANCES; ++i) {
++		multiSpeedInit(&speedState[i]);
++		multiSpeedSetTarget(&speedState[i], _requestedSpeedTenths(i));
++	}
++}
++
++static void _updateRuntimeSettings(void) {
++	audioMode = _requestedAudioMode();
++	for (unsigned i = 0; i < MULTI_MAX_INSTANCES; ++i) {
++		multiSpeedSetTarget(&speedState[i], _requestedSpeedTenths(i));
++	}
 +}
 +
 +static void _configureCore(struct mCore* core) {
@@ -627,7 +810,10 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +		return false;
 +	}
 +	_loadBios(instance->core);
-+	audioConverterReset(&instance->converter, instance->core->audioSampleRate(instance->core));
++	instance->captureAudio = false;
++	instance->audioSpeedTenths = MULTI_SPEED_ONE;
++	audioConverterResetScaled(&instance->converter,
++			instance->core->audioSampleRate(instance->core), instance->audioSpeedTenths);
 +	multiAudioFifoReset(&instance->audio);
 +	memset(&instance->stream, 0, sizeof(instance->stream));
 +	instance->stream.audioRateChanged = _instanceAudioRateChanged;
@@ -666,6 +852,33 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +	multiAudioClockReset(&audioClock);
 +}
 +
++static void _runInstanceFrames(unsigned index, uint16_t keys, unsigned frameSteps) {
++	struct MultiInstance* instance = &instances[index];
++	struct GBA* gba = instance->core->board;
++	if (frameSteps < 1) {
++		frameSteps = 1;
++	} else if (frameSteps > MULTI_SPEED_MAX_FRAMES) {
++		frameSteps = MULTI_SPEED_MAX_FRAMES;
++	}
++	instance->core->setKeys(instance->core, keys);
++	for (unsigned step = 0; step < frameSteps; ++step) {
++		/* Emulation, DMA, timers, and audio always run. Only software rendering
++		 * is skipped for intermediate accelerated frames. */
++		if (frameSteps > 1) {
++			gba->video.frameskipCounter = step + 1 < frameSteps ? 1 : 0;
++		}
++		instance->core->runFrame(instance->core);
++		if (step + 1 < frameSteps) {
++			/* At 262144 Hz one frame can contain about 4389 samples. Drain or
++			 * discard between subframes so the fixed raw ring can never backlog. */
++			_captureOrDiscardInstanceAudio(instance);
++		}
++	}
++	if (frameSteps > 1) {
++		gba->video.frameskipCounter = 0;
++	}
++}
++
 +static void* _workerMain(void* context) {
 +	struct MultiWorker* worker = context;
 +	uint64_t observedGeneration = 0;
@@ -681,12 +894,12 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +		uint64_t generation = workerGeneration;
 +		enum MultiWorkerCommand command = workerCommand;
 +		uint16_t keys = workerKeys[worker->instance];
++		unsigned frameSteps = workerFrameSteps[worker->instance];
 +		pthread_mutex_unlock(&workerMutex);
 +
 +		struct mCore* core = instances[worker->instance].core;
 +		if (command == WORKER_COMMAND_FRAME) {
-+			core->setKeys(core, keys);
-+			core->runFrame(core);
++			_runInstanceFrames(worker->instance, keys, frameSteps);
 +		} else if (command == WORKER_COMMAND_RESET) {
 +			core->reset(core);
 +		}
@@ -775,12 +988,12 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +	parallelActive = false;
 +}
 +
-+static void _executeBatch(enum MultiWorkerCommand command, const uint16_t* keys) {
++static void _executeBatch(enum MultiWorkerCommand command, const uint16_t* keys,
++		const unsigned* frameSteps) {
 +	if (!parallelActive) {
 +		for (unsigned i = 0; i < instanceCount; ++i) {
 +			if (command == WORKER_COMMAND_FRAME) {
-+				instances[i].core->setKeys(instances[i].core, keys[i]);
-+				instances[i].core->runFrame(instances[i].core);
++				_runInstanceFrames(i, keys[i], frameSteps[i]);
 +			} else if (command == WORKER_COMMAND_RESET) {
 +				instances[i].core->reset(instances[i].core);
 +			}
@@ -793,14 +1006,16 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +	if (keys) {
 +		memcpy(workerKeys, keys, instanceCount * sizeof(*keys));
 +	}
++	if (frameSteps) {
++		memcpy(workerFrameSteps, frameSteps, instanceCount * sizeof(*frameSteps));
++	}
 +	workerPending = instanceCount - 1;
 +	++workerGeneration;
 +	pthread_cond_broadcast(&workerWake);
 +	pthread_mutex_unlock(&workerMutex);
 +
 +	if (command == WORKER_COMMAND_FRAME) {
-+		instances[0].core->setKeys(instances[0].core, keys[0]);
-+		instances[0].core->runFrame(instances[0].core);
++		_runInstanceFrames(0, keys[0], frameSteps[0]);
 +	} else if (command == WORKER_COMMAND_RESET) {
 +		instances[0].core->reset(instances[0].core);
 +	}
@@ -812,13 +1027,36 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +	pthread_mutex_unlock(&workerMutex);
 +}
 +
-+static void _resetAudioPipeline(void) {
-+	multiAudioClockReset(&audioClock);
++static void _resetInstanceAudioPipeline(unsigned index, bool capture, unsigned speedTenths) {
++	struct MultiInstance* instance = &instances[index];
++	instance->captureAudio = capture;
++	instance->audioSpeedTenths = speedTenths;
++	mAudioBufferClear(instance->core->getAudioBuffer(instance->core));
++	audioConverterResetScaled(&instance->converter,
++			instance->core->audioSampleRate(instance->core), speedTenths);
++	multiAudioFifoReset(&instance->audio);
++}
++
++static void _prepareAudioPipelines(void) {
++	int selected = multiAudioSelectedIndex(audioMode, instanceCount);
 +	for (unsigned i = 0; i < instanceCount; ++i) {
-+		struct MultiInstance* instance = &instances[i];
-+		mAudioBufferClear(instance->core->getAudioBuffer(instance->core));
-+		audioConverterReset(&instance->converter, instance->core->audioSampleRate(instance->core));
-+		multiAudioFifoReset(&instance->audio);
++		bool capture = selected >= 0 && i == (unsigned) selected;
++		unsigned speedTenths = _effectiveAudioSpeed(i);
++		if (instances[i].captureAudio != capture ||
++				instances[i].audioSpeedTenths != speedTenths) {
++			_resetInstanceAudioPipeline(i, capture, speedTenths);
++		}
++	}
++}
++
++static void _resetAudioPipeline(bool resetClock) {
++	if (resetClock) {
++		multiAudioClockReset(&audioClock);
++	}
++	int selected = multiAudioSelectedIndex(audioMode, instanceCount);
++	for (unsigned i = 0; i < instanceCount; ++i) {
++		_resetInstanceAudioPipeline(i, selected >= 0 && i == (unsigned) selected,
++				_effectiveAudioSpeed(i));
 +	}
 +}
 +
@@ -848,7 +1086,7 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +			}
 +		}
 +	}
-+	_resetAudioPipeline();
++	_resetAudioPipeline(true);
 +	_startWorkers();
 +	deferredSetup = false;
 +
@@ -864,7 +1102,10 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +	return true;
 +}
 +
-+static uint16_t _readKeys(unsigned port) {
++static uint16_t _readKeys(unsigned port, bool* speedToggle) {
++	if (speedToggle) {
++		*speedToggle = false;
++	}
 +	if (!inputCallback) {
 +		return 0;
 +	}
@@ -875,12 +1116,49 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +		for (unsigned i = 0; i < sizeof(keymap) / sizeof(*keymap); ++i) {
 +			keys |= ((mask >> keymap[i]) & 1U) << i;
 +		}
++		if (speedToggle) {
++			*speedToggle = (mask >> RETRO_DEVICE_ID_JOYPAD_R2) & 1U;
++		}
 +	} else {
 +		for (unsigned i = 0; i < sizeof(keymap) / sizeof(*keymap); ++i) {
 +			keys |= (!!inputCallback(port, RETRO_DEVICE_JOYPAD, 0, keymap[i])) << i;
 +		}
++		if (speedToggle) {
++			*speedToggle = !!inputCallback(port, RETRO_DEVICE_JOYPAD, 0,
++					RETRO_DEVICE_ID_JOYPAD_R2);
++		}
 +	}
 +	return keys;
++}
++
++static void _showSpeedMessage(unsigned player) {
++	if (!environCallback) {
++		return;
++	}
++	char text[96];
++	if (!speedState[player].enabled) {
++		snprintf(text, sizeof(text), "Player %u speed: 1.0x", player + 1);
++	} else {
++		unsigned speed = speedState[player].targetTenths;
++		snprintf(text, sizeof(text), "Player %u speed: %u.%ux", player + 1,
++				speed / 10, speed % 10);
++	}
++	struct retro_message message = { text, 180 };
++	environCallback(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
++	_frontendLog(RETRO_LOG_INFO, "%s", text);
++}
++
++static void _showInactiveSpeedMessage(unsigned player) {
++	if (!environCallback) {
++		return;
++	}
++	char text[112];
++	snprintf(text, sizeof(text),
++			"Player %u speed target is 1.0x; select a faster target in Core Options",
++			player + 1);
++	struct retro_message message = { text, 180 };
++	environCallback(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
++	_frontendLog(RETRO_LOG_INFO, "%s", text);
 +}
 +
 +static void _composeVideo(const struct MultiLayout* layout) {
@@ -909,13 +1187,23 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +	}
 +}
 +
-+static void _mixAndSubmitAudio(void) {
++static void _captureOrDiscardInstanceAudio(struct MultiInstance* instance) {
++	if (instance->captureAudio) {
++		_drainInstanceAudio(instance);
++	} else {
++		/* Clearing advances no queue and is constant-time. Emulated audio remains
++		 * enabled because games can depend on its timing and registers. */
++		mAudioBufferClear(instance->core->getAudioBuffer(instance->core));
++	}
++}
++
++static void _submitAudio(void) {
 +	for (unsigned i = 0; i < instanceCount; ++i) {
 +		unsigned rate = instances[i].core->audioSampleRate(instances[i].core);
 +		if (rate != instances[i].converter.inputRate) {
 +			_instanceAudioRateChanged(&instances[i].stream, rate);
 +		}
-+		_drainInstanceAudio(&instances[i]);
++		_captureOrDiscardInstanceAudio(&instances[i]);
 +	}
 +	if (!instanceCount) {
 +		return;
@@ -927,21 +1215,14 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +	if (frames > AUDIO_OUTPUT_MAX_FRAMES) {
 +		frames = AUDIO_OUTPUT_MAX_FRAMES;
 +	}
-+	for (unsigned i = 0; i < instanceCount; ++i) {
-+		multiAudioFifoTrim(&instances[i].audio, frames + AUDIO_FIFO_MAX_LEAD);
-+	}
-+	for (size_t frame = 0; frame < frames; ++frame) {
-+		int32_t left = 0;
-+		int32_t right = 0;
-+		for (unsigned i = 0; i < instanceCount; ++i) {
-+			int16_t instanceLeft = 0;
-+			int16_t instanceRight = 0;
-+			multiAudioFifoPop(&instances[i].audio, &instanceLeft, &instanceRight);
-+			left += instanceLeft;
-+			right += instanceRight;
++	memset(mixedAudio, 0, frames * 2 * sizeof(*mixedAudio));
++	int selected = multiAudioSelectedIndex(audioMode, instanceCount);
++	if (selected >= 0) {
++		struct MultiAudioFifo* fifo = &instances[selected].audio;
++		multiAudioFifoTrim(fifo, frames + AUDIO_FIFO_MAX_LEAD);
++		for (size_t frame = 0; frame < frames; ++frame) {
++			multiAudioFifoPop(fifo, &mixedAudio[frame * 2], &mixedAudio[frame * 2 + 1]);
 +		}
-+		mixedAudio[frame * 2] = (int16_t) (left / (int32_t) instanceCount);
-+		mixedAudio[frame * 2 + 1] = (int16_t) (right / (int32_t) instanceCount);
 +	}
 +	if (audioCallback) {
 +		size_t accepted = audioCallback(mixedAudio, frames);
@@ -1033,20 +1314,26 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +	useBitmasks = environCallback(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL);
 +
 +	static struct retro_input_descriptor descriptors[
-+			MULTI_MAX_INSTANCES * (sizeof(keymap) / sizeof(*keymap)) + 1];
++			MULTI_MAX_INSTANCES * ((sizeof(keymap) / sizeof(*keymap)) + 1) + 1];
 +	static const char* names[] = {
 +		"A", "B", "Select", "Start", "Right", "Left", "Up", "Down", "R", "L",
 +	};
 +	memset(descriptors, 0, sizeof(descriptors));
 +	for (unsigned port = 0; port < MULTI_MAX_INSTANCES; ++port) {
++		size_t base = port * ((sizeof(keymap) / sizeof(*keymap)) + 1);
 +		for (unsigned key = 0; key < sizeof(keymap) / sizeof(*keymap); ++key) {
-+			struct retro_input_descriptor* descriptor =
-+					&descriptors[port * (sizeof(keymap) / sizeof(*keymap)) + key];
++			struct retro_input_descriptor* descriptor = &descriptors[base + key];
 +			descriptor->port = port;
 +			descriptor->device = RETRO_DEVICE_JOYPAD;
 +			descriptor->id = keymap[key];
 +			descriptor->description = names[key];
 +		}
++		struct retro_input_descriptor* speed =
++				&descriptors[base + sizeof(keymap) / sizeof(*keymap)];
++		speed->port = port;
++		speed->device = RETRO_DEVICE_JOYPAD;
++		speed->id = RETRO_DEVICE_ID_JOYPAD_R2;
++		speed->description = "Toggle Speed";
 +	}
 +	environCallback(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, descriptors);
 +
@@ -1074,6 +1361,7 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +	_destroyContent();
 +	memset(saveData, 0xFF, sizeof(saveData));
 +	memset(compositeBuffer, 0, sizeof(compositeBuffer));
++	_initializeRuntimeSettings();
 +	if (!_copyRom(game)) {
 +		_frontendLog(RETRO_LOG_ERROR, "could not copy content into immutable ROM memory");
 +		return false;
@@ -1110,15 +1398,31 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +		}
 +		return;
 +	}
++	bool variablesUpdated = false;
++	if (environCallback && environCallback(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE,
++			&variablesUpdated) && variablesUpdated) {
++		_updateRuntimeSettings();
++	}
 +
 +	if (inputPollCallback) {
 +		inputPollCallback();
 +	}
 +	uint16_t keys[MULTI_MAX_INSTANCES] = { 0, 0, 0 };
++	unsigned frameSteps[MULTI_MAX_INSTANCES] = { 1, 1, 1 };
 +	for (unsigned i = 0; i < instanceCount; ++i) {
-+		keys[i] = _readKeys(i);
++		bool speedToggle = false;
++		keys[i] = _readKeys(i, &speedToggle);
++		bool wasDown = speedState[i].buttonDown;
++		if (multiSpeedHandleR2(&speedState[i], speedToggle)) {
++			_showSpeedMessage(i);
++		} else if (speedToggle && !wasDown &&
++				speedState[i].targetTenths == MULTI_SPEED_ONE) {
++			_showInactiveSpeedMessage(i);
++		}
++		frameSteps[i] = multiSpeedNextFrames(&speedState[i]);
 +	}
-+	_executeBatch(WORKER_COMMAND_FRAME, keys);
++	_prepareAudioPipelines();
++	_executeBatch(WORKER_COMMAND_FRAME, keys, frameSteps);
 +	_syncRtcTrailers();
 +
 +	struct MultiLayout layout;
@@ -1127,15 +1431,18 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +		videoCallback(compositeBuffer, layout.width, layout.height,
 +				layout.width * sizeof(*compositeBuffer));
 +	}
-+	_mixAndSubmitAudio();
++	_submitAudio();
 +}
 +
 +void retro_reset(void) {
 +	if (!instanceCount || !_finishDeferredSetup()) {
 +		return;
 +	}
-+	_executeBatch(WORKER_COMMAND_RESET, NULL);
-+	_resetAudioPipeline();
++	_executeBatch(WORKER_COMMAND_RESET, NULL, NULL);
++	for (unsigned i = 0; i < instanceCount; ++i) {
++		multiSpeedResetPhase(&speedState[i]);
++	}
++	_resetAudioPipeline(true);
 +}
 +
 +size_t retro_serialize_size(void) {
@@ -1187,10 +1494,10 @@ index 0000000000000000000000000000000000000000..b601fd54750222712664e7c9bfd778ed
 +}
 diff --git a/src/platform/libretro/libretro_multi_support.c b/src/platform/libretro/libretro_multi_support.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..20aa99a0761e1fe96c44123e66f9668e709b6ed5
+index 0000000000000000000000000000000000000000..db6e9d33c684d6528c20ff55d4cc1550a5a44e73
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi_support.c
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,274 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -1227,6 +1534,121 @@ index 0000000000000000000000000000000000000000..20aa99a0761e1fe96c44123e66f9668e
 +		return false;
 +	}
 +	return true;
++}
++
++unsigned multiSpeedParseTarget(const char* value) {
++	if (!value || value[0] < '1' || value[0] > '4' || value[1] != '.' ||
++			value[2] < '0' || value[2] > '9' || value[3] != 'x' || value[4] != '\0') {
++		return MULTI_SPEED_MIN_TENTHS;
++	}
++
++	unsigned targetTenths = (unsigned) (value[0] - '0') * 10U +
++			(unsigned) (value[2] - '0');
++	if (targetTenths < MULTI_SPEED_MIN_TENTHS || targetTenths > MULTI_SPEED_MAX_TENTHS) {
++		return MULTI_SPEED_MIN_TENTHS;
++	}
++	return targetTenths;
++}
++
++void multiSpeedInit(struct MultiSpeedState* speed) {
++	if (!speed) {
++		return;
++	}
++	speed->targetTenths = MULTI_SPEED_DEFAULT_TENTHS;
++	speed->phase = 0;
++	speed->enabled = false;
++	speed->buttonDown = false;
++}
++
++void multiSpeedSetTarget(struct MultiSpeedState* speed, unsigned targetTenths) {
++	if (!speed) {
++		return;
++	}
++	if (targetTenths < MULTI_SPEED_MIN_TENTHS || targetTenths > MULTI_SPEED_MAX_TENTHS) {
++		targetTenths = MULTI_SPEED_MIN_TENTHS;
++	}
++	if (speed->targetTenths == targetTenths) {
++		return;
++	}
++	speed->targetTenths = targetTenths;
++	if (targetTenths == MULTI_SPEED_MIN_TENTHS) {
++		speed->enabled = false;
++	}
++	speed->phase = speed->enabled ? MULTI_SPEED_MIN_TENTHS - 1 : 0;
++}
++
++void multiSpeedResetPhase(struct MultiSpeedState* speed) {
++	if (speed) {
++		speed->phase = speed->enabled ? MULTI_SPEED_MIN_TENTHS - 1 : 0;
++	}
++}
++
++bool multiSpeedHandleR2(struct MultiSpeedState* speed, bool pressed) {
++	if (!speed) {
++		return false;
++	}
++
++	bool rising = pressed && !speed->buttonDown;
++	speed->buttonDown = pressed;
++	if (!rising || speed->targetTenths == MULTI_SPEED_MIN_TENTHS) {
++		return false;
++	}
++	speed->enabled = !speed->enabled;
++	speed->phase = speed->enabled ? MULTI_SPEED_MIN_TENTHS - 1 : 0;
++	return true;
++}
++
++unsigned multiSpeedEffectiveTenths(const struct MultiSpeedState* speed) {
++	if (!speed || !speed->enabled || speed->targetTenths < MULTI_SPEED_MIN_TENTHS ||
++			speed->targetTenths > MULTI_SPEED_MAX_TENTHS) {
++		return MULTI_SPEED_MIN_TENTHS;
++	}
++	return speed->targetTenths;
++}
++
++unsigned multiSpeedNextFrames(struct MultiSpeedState* speed) {
++	if (!speed) {
++		return 1;
++	}
++	speed->phase += multiSpeedEffectiveTenths(speed);
++	unsigned frames = speed->phase / MULTI_SPEED_MIN_TENTHS;
++	speed->phase %= MULTI_SPEED_MIN_TENTHS;
++	return frames;
++}
++
++enum MultiAudioMode multiAudioParseMode(const char* value) {
++	if (!value || !strcmp(value, "Player 1") || !strcmp(value, "player 1")) {
++		return MULTI_AUDIO_PLAYER_1;
++	}
++	if (!strcmp(value, "Player 2") || !strcmp(value, "player 2")) {
++		return MULTI_AUDIO_PLAYER_2;
++	}
++	if (!strcmp(value, "Player 3") || !strcmp(value, "player 3")) {
++		return MULTI_AUDIO_PLAYER_3;
++	}
++	if (!strcmp(value, "Disabled") || !strcmp(value, "disabled")) {
++		return MULTI_AUDIO_DISABLED;
++	}
++	return MULTI_AUDIO_PLAYER_1;
++}
++
++int multiAudioSelectedIndex(enum MultiAudioMode mode, unsigned activeCount) {
++	unsigned index;
++	switch (mode) {
++	case MULTI_AUDIO_PLAYER_1:
++		index = 0;
++		break;
++	case MULTI_AUDIO_PLAYER_2:
++		index = 1;
++		break;
++	case MULTI_AUDIO_PLAYER_3:
++		index = 2;
++		break;
++	case MULTI_AUDIO_DISABLED:
++	default:
++		return -1;
++	}
++	return index < activeCount && index < MULTI_MAX_INSTANCES ? (int) index : -1;
 +}
 +
 +void multiAudioClockReset(struct MultiAudioClock* clock) {
@@ -1352,10 +1774,10 @@ index 0000000000000000000000000000000000000000..20aa99a0761e1fe96c44123e66f9668e
 +}
 diff --git a/src/platform/libretro/libretro_multi_support.h b/src/platform/libretro/libretro_multi_support.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..478993ae65c3e3c72367bcfd91023f2b3e91fb12
+index 0000000000000000000000000000000000000000..a11145a60f3ee6b0f1a7e71ddae2c7cf1bd39700
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi_support.h
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,85 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -1373,7 +1795,14 @@ index 0000000000000000000000000000000000000000..478993ae65c3e3c72367bcfd91023f2b
 +#define MULTI_VIDEO_HEIGHT 160
 +#define MULTI_COMPOSITE_WIDTH 480
 +#define MULTI_COMPOSITE_HEIGHT 320
-+#define MULTI_AUDIO_FIFO_FRAMES 4096
++#define MULTI_AUDIO_FIFO_FRAMES 8192
++
++#define MULTI_SPEED_MIN_TENTHS 10
++#define MULTI_SPEED_MAX_TENTHS 40
++#define MULTI_SPEED_DEFAULT_TENTHS 20
++#define MULTI_SPEED_ONE MULTI_SPEED_MIN_TENTHS
++#define MULTI_SPEED_DEFAULT MULTI_SPEED_DEFAULT_TENTHS
++#define MULTI_SPEED_MAX_FRAMES (MULTI_SPEED_MAX_TENTHS / MULTI_SPEED_MIN_TENTHS)
 +
 +struct MultiPlacement {
 +	unsigned x;
@@ -1390,6 +1819,20 @@ index 0000000000000000000000000000000000000000..478993ae65c3e3c72367bcfd91023f2b
 +	uint64_t remainder;
 +};
 +
++struct MultiSpeedState {
++	unsigned targetTenths;
++	unsigned phase;
++	bool enabled;
++	bool buttonDown;
++};
++
++enum MultiAudioMode {
++	MULTI_AUDIO_PLAYER_1,
++	MULTI_AUDIO_PLAYER_2,
++	MULTI_AUDIO_PLAYER_3,
++	MULTI_AUDIO_DISABLED,
++};
++
 +struct MultiAudioFifo {
 +	int16_t samples[MULTI_AUDIO_FIFO_FRAMES * 2];
 +	size_t read;
@@ -1398,6 +1841,15 @@ index 0000000000000000000000000000000000000000..478993ae65c3e3c72367bcfd91023f2b
 +};
 +
 +bool multiLayoutForCount(unsigned count, struct MultiLayout* layout);
++unsigned multiSpeedParseTarget(const char* value);
++void multiSpeedInit(struct MultiSpeedState* speed);
++void multiSpeedSetTarget(struct MultiSpeedState* speed, unsigned targetTenths);
++void multiSpeedResetPhase(struct MultiSpeedState* speed);
++bool multiSpeedHandleR2(struct MultiSpeedState* speed, bool pressed);
++unsigned multiSpeedEffectiveTenths(const struct MultiSpeedState* speed);
++unsigned multiSpeedNextFrames(struct MultiSpeedState* speed);
++enum MultiAudioMode multiAudioParseMode(const char* value);
++int multiAudioSelectedIndex(enum MultiAudioMode mode, unsigned activeCount);
 +void multiAudioClockReset(struct MultiAudioClock* clock);
 +size_t multiAudioClockNext(struct MultiAudioClock* clock, unsigned sampleRate,
 +		uint32_t frameCycles, uint32_t frequency);
@@ -1413,7 +1865,7 @@ index 0000000000000000000000000000000000000000..478993ae65c3e3c72367bcfd91023f2b
 +#endif
 diff --git a/src/platform/libretro/mgba_multi_libretro.info b/src/platform/libretro/mgba_multi_libretro.info
 new file mode 100644
-index 0000000000000000000000000000000000000000..7f139b17ef93dd830af22d816fbf357f1dc92ce3
+index 0000000000000000000000000000000000000000..7d8917de76c3142c1dfae6ce1240ebd2e01da85b
 --- /dev/null
 +++ b/src/platform/libretro/mgba_multi_libretro.info
 @@ -0,0 +1,13 @@
@@ -1428,14 +1880,14 @@ index 0000000000000000000000000000000000000000..7f139b17ef93dd830af22d816fbf357f
 +database = "Nintendo - Game Boy Advance"
 +license = "MPLv2"
 +permissions = ""
-+display_version = "0.11-dev-multi.0.1.0"
++display_version = "0.11-dev-multi.0.2.0"
 +supports_no_game = "false"
 diff --git a/tests/libretro_audio_test.c b/tests/libretro_audio_test.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..4ea267cb0308ba0c56a80131872fa085cc51c547
+index 0000000000000000000000000000000000000000..8a55e504048b7f4dc6b8fb2d19de88100013cdcf
 --- /dev/null
 +++ b/tests/libretro_audio_test.c
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,225 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -1450,6 +1902,7 @@ index 0000000000000000000000000000000000000000..4ea267cb0308ba0c56a80131872fa085
 +#include <string.h>
 +
 +#define TEST_CHUNK 128
++#define SCALED_LONG_RUN_PERIODS 1024
 +
 +static const unsigned rates[] = { 32768, 65536, 131072, 262144 };
 +
@@ -1505,6 +1958,111 @@ index 0000000000000000000000000000000000000000..4ea267cb0308ba0c56a80131872fa085
 +	}
 +}
 +
++static void testScaledConverterResetBounds(void) {
++	for (size_t r = 0; r < sizeof(rates) / sizeof(*rates); ++r) {
++		struct LibretroAudioConverter converter;
++		audioConverterResetScaled(&converter, rates[r], 0);
++		assert(converter.inputRate == rates[r]);
++		assert(convertFrames(&converter, 10 * nativeFramesPerEvent(rates[r]), NULL) == 40);
++
++		audioConverterResetScaled(&converter, rates[r], 41);
++		assert(converter.inputRate == rates[r]);
++		assert(convertFrames(&converter, 40 * nativeFramesPerEvent(rates[r]), NULL) == 40);
++	}
++
++	struct LibretroAudioConverter converter;
++	audioConverterResetScaled(&converter, 0, 30);
++	assert(converter.mode == CONV_PASSTHROUGH);
++	assert(convertFrames(&converter, 37, NULL) == 37);
++}
++
++static void testEveryScaledRateLongRun(void) {
++	/* One period contains `speedTenths` hardware events. At that boundary the
++	 * exact scaled ratio must always yield 40 frontend frames, regardless of
++	 * hardware rate or selected tenth. Repeating the period exercises phase
++	 * preservation, chunk splits, and FIFO wraparound without allowing debt. */
++	for (unsigned speedTenths = 10; speedTenths <= 40; ++speedTenths) {
++		for (size_t r = 0; r < sizeof(rates) / sizeof(*rates); ++r) {
++			struct LibretroAudioConverter converter;
++			struct MultiAudioFifo fifo;
++			audioConverterResetScaled(&converter, rates[r], speedTenths);
++			multiAudioFifoReset(&fifo);
++
++			size_t totalProduced = 0;
++			for (unsigned period = 0; period < SCALED_LONG_RUN_PERIODS; ++period) {
++				size_t produced = convertFrames(&converter,
++						speedTenths * nativeFramesPerEvent(rates[r]), &fifo);
++				assert(produced == 40);
++				totalProduced += produced;
++				assert(fifo.size == 40);
++				for (unsigned frame = 0; frame < 40; ++frame) {
++					int16_t left;
++					int16_t right;
++					assert(multiAudioFifoPop(&fifo, &left, &right));
++					assert(left == 0 && right == 0);
++				}
++				assert(fifo.size == 0);
++			}
++			assert(totalProduced == (size_t) SCALED_LONG_RUN_PERIODS * 40);
++			assert(fifo.dropped == 0);
++		}
++	}
++}
++
++static void testScaledSchedulePacing(void) {
++	/* The scheduler starts each accelerated interval with the larger step.
++	 * That one-frame prebuffer prevents fractional targets from repeatedly
++	 * underrunning while fixed-cadence frontend audio is consumed. */
++	for (unsigned speedTenths = 10; speedTenths <= 40; ++speedTenths) {
++		for (size_t r = 0; r < sizeof(rates) / sizeof(*rates); ++r) {
++			struct LibretroAudioConverter converter;
++			struct MultiAudioFifo fifo;
++			struct MultiAudioClock clock;
++			struct MultiSpeedState speed;
++			audioConverterResetScaled(&converter, rates[r], speedTenths);
++			multiAudioFifoReset(&fifo);
++			multiAudioClockReset(&clock);
++			multiSpeedInit(&speed);
++			multiSpeedSetTarget(&speed, speedTenths);
++			if (speedTenths > 10) {
++				assert(multiSpeedHandleR2(&speed, true));
++				assert(!multiSpeedHandleR2(&speed, false));
++			}
++
++			uint32_t cycleRemainder = 0;
++			size_t zeroFilled = 0;
++			size_t maximumLead = 0;
++			for (unsigned hostFrame = 0; hostFrame < 1000; ++hostFrame) {
++				unsigned steps = multiSpeedNextFrames(&speed);
++				for (unsigned step = 0; step < steps; ++step) {
++					uint32_t cycles = cycleRemainder + 280896;
++					size_t events = cycles / 1024;
++					cycleRemainder = cycles % 1024;
++					convertFrames(&converter,
++							events * nativeFramesPerEvent(rates[r]), &fifo);
++				}
++
++				size_t needed = multiAudioClockNext(&clock,
++						GBA_OUTPUT_RATE, 280896, 16777216);
++				for (size_t frame = 0; frame < needed; ++frame) {
++					int16_t left;
++					int16_t right;
++					if (!multiAudioFifoPop(&fifo, &left, &right)) {
++						++zeroFilled;
++					}
++				}
++				if (fifo.size > maximumLead) {
++					maximumLead = fifo.size;
++				}
++			}
++
++			assert(zeroFilled <= 4);
++			assert(maximumLead <= 1100);
++			assert(fifo.dropped == 0);
++		}
++	}
++}
++
 +static void testTenMinuteNoDebtPacing(void) {
 +	struct MultiAudioClock clock;
 +	struct MultiAudioFifo fifo;
@@ -1549,15 +2107,18 @@ index 0000000000000000000000000000000000000000..4ea267cb0308ba0c56a80131872fa085
 +int main(void) {
 +	testAllRatesAndChunkSplits();
 +	testEveryOrderedRateTransition();
++	testScaledConverterResetBounds();
++	testEveryScaledRateLongRun();
++	testScaledSchedulePacing();
 +	testTenMinuteNoDebtPacing();
 +	return 0;
 +}
 diff --git a/tests/libretro_multi_support_test.c b/tests/libretro_multi_support_test.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..6ff195b42ac0b5f736d4d684917d1e4716eecc80
+index 0000000000000000000000000000000000000000..f153873e7eabb325d855507597cd060afa57397a
 --- /dev/null
 +++ b/tests/libretro_multi_support_test.c
-@@ -0,0 +1,129 @@
+@@ -0,0 +1,309 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -1570,6 +2131,14 @@ index 0000000000000000000000000000000000000000..6ff195b42ac0b5f736d4d684917d1e47
 +#include <stdint.h>
 +#include <stdlib.h>
 +#include <string.h>
++
++static void speedTargetString(unsigned targetTenths, char value[5]) {
++	value[0] = (char) ('0' + targetTenths / 10);
++	value[1] = '.';
++	value[2] = (char) ('0' + targetTenths % 10);
++	value[3] = 'x';
++	value[4] = '\0';
++}
 +
 +static void testLayouts(void) {
 +	struct MultiLayout layout;
@@ -1590,6 +2159,173 @@ index 0000000000000000000000000000000000000000..6ff195b42ac0b5f736d4d684917d1e47
 +	assert(layout.placement[0].x == 0 && layout.placement[0].y == 0);
 +	assert(layout.placement[1].x == 240 && layout.placement[1].y == 0);
 +	assert(layout.placement[2].x == 120 && layout.placement[2].y == 160);
++}
++
++static void testSpeedTargetParsing(void) {
++	char value[5];
++	for (unsigned target = MULTI_SPEED_MIN_TENTHS;
++			target <= MULTI_SPEED_MAX_TENTHS; ++target) {
++		speedTargetString(target, value);
++		assert(multiSpeedParseTarget(value) == target);
++	}
++
++	static const char* invalid[] = {
++		"", "1", "1x", "1.0", "1.00x", "0.9x", "4.1x", "10.0x",
++		"1.0X", " 1.0x", "1.0x ", "fast", "Player 1",
++	};
++	assert(multiSpeedParseTarget(NULL) == MULTI_SPEED_MIN_TENTHS);
++	for (size_t i = 0; i < sizeof(invalid) / sizeof(*invalid); ++i) {
++		assert(multiSpeedParseTarget(invalid[i]) == MULTI_SPEED_MIN_TENTHS);
++	}
++}
++
++static void enableSpeed(struct MultiSpeedState* speed, unsigned targetTenths) {
++	multiSpeedInit(speed);
++	multiSpeedSetTarget(speed, targetTenths);
++	if (targetTenths > MULTI_SPEED_MIN_TENTHS) {
++		assert(multiSpeedHandleR2(speed, true));
++		assert(!multiSpeedHandleR2(speed, false));
++	}
++}
++
++static void testEverySpeedSchedule(void) {
++	for (unsigned target = MULTI_SPEED_MIN_TENTHS;
++			target <= MULTI_SPEED_MAX_TENTHS; ++target) {
++		struct MultiSpeedState speed;
++		enableSpeed(&speed, target);
++		assert(multiSpeedEffectiveTenths(&speed) == target);
++
++		unsigned total = 0;
++		for (unsigned tick = 0; tick < 1000; ++tick) {
++			unsigned frames = multiSpeedNextFrames(&speed);
++			assert(frames >= 1 && frames <= 4);
++			total += frames;
++		}
++		assert(total == target * 100);
++		assert(speed.phase == (target > MULTI_SPEED_MIN_TENTHS ? 9U : 0U));
++	}
++
++	struct MultiSpeedState speed;
++	enableSpeed(&speed, 11);
++	assert(multiSpeedNextFrames(&speed) == 2);
++	for (unsigned tick = 0; tick < 9; ++tick) {
++		assert(multiSpeedNextFrames(&speed) == 1);
++	}
++
++	enableSpeed(&speed, 40);
++	for (unsigned tick = 0; tick < 100; ++tick) {
++		assert(multiSpeedNextFrames(&speed) == 4);
++	}
++}
++
++static void testSpeedStateAndR2Edges(void) {
++	struct MultiSpeedState speed;
++	multiSpeedInit(&speed);
++	assert(speed.targetTenths == MULTI_SPEED_DEFAULT_TENTHS);
++	assert(speed.phase == 0);
++	assert(!speed.enabled);
++	assert(!speed.buttonDown);
++	assert(multiSpeedEffectiveTenths(&speed) == MULTI_SPEED_MIN_TENTHS);
++	assert(multiSpeedNextFrames(&speed) == 1);
++
++	multiSpeedSetTarget(&speed, 27);
++	assert(speed.targetTenths == 27);
++	assert(!speed.enabled);
++	assert(multiSpeedHandleR2(&speed, true));
++	assert(speed.enabled);
++	assert(multiSpeedEffectiveTenths(&speed) == 27);
++	assert(!multiSpeedHandleR2(&speed, true));
++	assert(speed.enabled);
++	assert(!multiSpeedHandleR2(&speed, false));
++	assert(multiSpeedHandleR2(&speed, true));
++	assert(!speed.enabled);
++	assert(speed.phase == 0);
++	assert(!multiSpeedHandleR2(&speed, true));
++	assert(!multiSpeedHandleR2(&speed, false));
++
++	/* A 1.0x target cannot be armed and changing to it disarms speed-up. */
++	multiSpeedSetTarget(&speed, 27);
++	assert(multiSpeedHandleR2(&speed, true));
++	assert(!multiSpeedHandleR2(&speed, false));
++	assert(speed.enabled);
++	(void) multiSpeedNextFrames(&speed);
++	assert(speed.phase != 0);
++	multiSpeedSetTarget(&speed, 10);
++	assert(!speed.enabled);
++	assert(speed.phase == 0);
++	assert(!multiSpeedHandleR2(&speed, true));
++	assert(!multiSpeedHandleR2(&speed, false));
++	assert(multiSpeedEffectiveTenths(&speed) == 10);
++
++	/* Invalid programmatic values are made safe in the same way. */
++	multiSpeedSetTarget(&speed, 9);
++	assert(speed.targetTenths == 10);
++	multiSpeedSetTarget(&speed, 41);
++	assert(speed.targetTenths == 10);
++
++	/* Setting the same target preserves fractional progress; a change resets it. */
++	enableSpeed(&speed, 13);
++	assert(multiSpeedNextFrames(&speed) == 2);
++	assert(speed.phase == 2);
++	multiSpeedSetTarget(&speed, 13);
++	assert(speed.phase == 2);
++	multiSpeedSetTarget(&speed, 14);
++	assert(speed.phase == 9);
++	multiSpeedResetPhase(&speed);
++	assert(speed.phase == 9);
++}
++
++static void testIndependentSpeedStates(void) {
++	struct MultiSpeedState speed[MULTI_MAX_INSTANCES];
++	for (unsigned i = 0; i < MULTI_MAX_INSTANCES; ++i) {
++		multiSpeedInit(&speed[i]);
++		multiSpeedSetTarget(&speed[i], 15 + i * 10);
++	}
++
++	assert(multiSpeedHandleR2(&speed[1], true));
++	assert(!multiSpeedHandleR2(&speed[1], true));
++	assert(!speed[0].enabled && speed[1].enabled && !speed[2].enabled);
++	assert(multiSpeedEffectiveTenths(&speed[0]) == 10);
++	assert(multiSpeedEffectiveTenths(&speed[1]) == 25);
++	assert(multiSpeedEffectiveTenths(&speed[2]) == 10);
++
++	assert(multiSpeedHandleR2(&speed[2], true));
++	assert(!multiSpeedHandleR2(&speed[2], false));
++	assert(!speed[0].enabled && speed[1].enabled && speed[2].enabled);
++	assert(multiSpeedEffectiveTenths(&speed[2]) == 35);
++
++	assert(!multiSpeedHandleR2(&speed[1], false));
++	assert(multiSpeedHandleR2(&speed[1], true));
++	assert(!speed[1].enabled && speed[2].enabled);
++}
++
++static void testAudioRoutes(void) {
++	assert(multiAudioParseMode(NULL) == MULTI_AUDIO_PLAYER_1);
++	assert(multiAudioParseMode("Player 1") == MULTI_AUDIO_PLAYER_1);
++	assert(multiAudioParseMode("Player 2") == MULTI_AUDIO_PLAYER_2);
++	assert(multiAudioParseMode("Player 3") == MULTI_AUDIO_PLAYER_3);
++	assert(multiAudioParseMode("Disabled") == MULTI_AUDIO_DISABLED);
++	assert(multiAudioParseMode("player 2") == MULTI_AUDIO_PLAYER_2);
++	assert(multiAudioParseMode("player 3") == MULTI_AUDIO_PLAYER_3);
++	assert(multiAudioParseMode("disabled") == MULTI_AUDIO_DISABLED);
++	assert(multiAudioParseMode("") == MULTI_AUDIO_PLAYER_1);
++	assert(multiAudioParseMode("Mix") == MULTI_AUDIO_PLAYER_1);
++	assert(multiAudioParseMode("player 1") == MULTI_AUDIO_PLAYER_1);
++
++	static const enum MultiAudioMode modes[] = {
++		MULTI_AUDIO_PLAYER_1,
++		MULTI_AUDIO_PLAYER_2,
++		MULTI_AUDIO_PLAYER_3,
++	};
++	for (unsigned count = 0; count <= MULTI_MAX_INSTANCES + 1; ++count) {
++		for (unsigned player = 0; player < MULTI_MAX_INSTANCES; ++player) {
++			int expected = player < count && player < MULTI_MAX_INSTANCES ?
++					(int) player : -1;
++			assert(multiAudioSelectedIndex(modes[player], count) == expected);
++		}
++		assert(multiAudioSelectedIndex(MULTI_AUDIO_DISABLED, count) == -1);
++		assert(multiAudioSelectedIndex((enum MultiAudioMode) 99, count) == -1);
++	}
 +}
 +
 +static void testExactAudioClock(void) {
@@ -1682,6 +2418,11 @@ index 0000000000000000000000000000000000000000..6ff195b42ac0b5f736d4d684917d1e47
 +
 +int main(void) {
 +	testLayouts();
++	testSpeedTargetParsing();
++	testEverySpeedSchedule();
++	testSpeedStateAndR2Edges();
++	testIndependentSpeedStates();
++	testAudioRoutes();
 +	testExactAudioClock();
 +	testBoundedAudioFifo();
 +	testRtcCanonicalization();

@@ -137,9 +137,9 @@ apply_patch_once "$mgba_dir" "$kit_root/patches/mgba-multi.patch"
 grep -q 'mGBA Multi' \
   "$mgba_dir/src/platform/libretro/mgba_multi_libretro.info" ||
   fail "custom core metadata was not patched into mGBA"
-grep -q 'display_version = "0.11-dev-multi.0.1.0"' \
+grep -F "display_version = \"0.11-dev-multi.$CUSTOM_CORE_VERSION\"" \
   "$mgba_dir/src/platform/libretro/mgba_multi_libretro.info" ||
-  fail "custom core metadata is not version 0.1.0"
+  fail "custom core metadata is not version $CUSTOM_CORE_VERSION"
 grep -q 'CMAKE_SYSTEM_NAME STREQUAL "tvOS"' "$mgba_dir/CMakeLists.txt" ||
   fail "tvOS CMake support was not patched into mGBA"
 grep -q 'BUILD_LIBRETRO_MULTI' "$mgba_dir/CMakeLists.txt" ||
@@ -305,10 +305,25 @@ done
 core_strings="$(strings "$multi_core_dylib")" ||
   fail "could not inspect the mGBA Multi strings"
 if grep -Ei \
-  'mgba_multi_link|mgba_link_[23]|Local link cable|threaded link|mgba_multi_speed|speed target|Toggle individual speed|mgba_multi_audio|mgba_multi_[23]|Load Subsystem|mGBA Multi \(2 ROMs\)|mGBA Multi \(3 ROMs\)' \
+  'mgba_multi_link|mgba_link_[23]|Local link cable|threaded link|mgba_multi_[23]|Load Subsystem|mGBA Multi \(2 ROMs\)|mGBA Multi \(3 ROMs\)' \
   <<<"$core_strings" >/dev/null; then
-  fail "mGBA Multi unexpectedly contains removed link, speed, or subsystem features"
+  fail "mGBA Multi unexpectedly contains removed link or subsystem features"
 fi
+if grep -E '(^|[^[:alnum:]_])mgba_multi_speed([^[:alnum:]_]|$)' \
+    <<<"$core_strings" >/dev/null ||
+    grep -F 'Toggle individual speed' <<<"$core_strings" >/dev/null; then
+  fail "mGBA Multi unexpectedly contains the removed shared speed control"
+fi
+for required_core_string in \
+  mgba_multi_audio \
+  mgba_multi_speed_p1 \
+  mgba_multi_speed_p2 \
+  mgba_multi_speed_p3 \
+  'Audio output; Player 1|Player 2|Player 3|Disabled' \
+  'Toggle Speed'; do
+  grep -F "$required_core_string" <<<"$core_strings" >/dev/null ||
+    fail "mGBA Multi is missing required runtime feature: $required_core_string"
+done
 
 module_dir="$retroarch_dir/pkg/apple/tvOS/modules"
 mkdir -p "$module_dir"
@@ -431,7 +446,13 @@ rm -f -- "$ipa_path" "$dist_dir/SHA256SUMS.txt" "$dist_dir/BUILD-MANIFEST.txt"
   printf 'host_support_tests=true\n'
   printf 'aggregate_save_ram=true\n'
   printf 'link_cable=false\n'
-  printf 'per_instance_speed=false\n'
+  printf 'per_instance_speed=true\n'
+  printf 'speed_toggle=R2\n'
+  printf 'speed_min_tenths=10\n'
+  printf 'speed_max_tenths=40\n'
+  printf 'speed_step_tenths=1\n'
+  printf 'audio_output=single_instance_or_disabled\n'
+  printf 'audio_mix=false\n'
   printf 'subsystems=false\n'
   printf 'savestates=false\n'
   printf 'stock_control_core=false\n'
