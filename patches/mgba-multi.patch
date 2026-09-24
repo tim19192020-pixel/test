@@ -92,10 +92,10 @@ index 834e9fd9ceb94a972941fb7b12494270702601e8..c4b63b8b1da29600e32662063aed79ae
  	message(STATUS "	Shared: ${BUILD_SHARED}")
 diff --git a/README_MULTI_LIBRETRO.md b/README_MULTI_LIBRETRO.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..7bf044c743d3a74f58906eb2e735ca65db0b3852
+index 0000000000000000000000000000000000000000..36b413e5ddb0615354ae891e3d3a4f58545ee24f
 --- /dev/null
 +++ b/README_MULTI_LIBRETRO.md
-@@ -0,0 +1,154 @@
+@@ -0,0 +1,156 @@
 +# mGBA Multi libretro core
 +
 +This fork adds a separate `mGBA Multi` libretro target. It keeps the normal
@@ -185,7 +185,9 @@ index 0000000000000000000000000000000000000000..7bf044c743d3a74f58906eb2e735ca65
 +
 +Press **R2** on a player's controller to toggle only that player between 1x
 +and the configured target. R2 is edge-triggered, so holding it does not cycle
-+or repeatedly toggle the speed. Set a target above 1x before using the toggle.
++or repeatedly toggle the speed. Every content session starts at 1x, even when
++a faster target is configured. Set a target above 1x, then press R2 to activate
++it; press R2 again to return to 1x. Changing a target does not activate it.
 +
 +Loading one ROM through **Load Content** runs that ROM in every instance. To
 +use different games or versions, use RetroArch's **Load Subsystem** flow and
@@ -383,10 +385,10 @@ index 8450f0d25d4b8e933b56370d01ba050f0a7f1405..60e35e1e82364a82fbd9b67e11b84d29
  				core->videoLogger = &gbacore->threadProxy.d;
 diff --git a/src/platform/libretro/libretro_multi.c b/src/platform/libretro/libretro_multi.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..fcf96c7f7e553c584365fd6c585e44439d208f77
+index 0000000000000000000000000000000000000000..843b0b97fa97ab235907e80905c732413647f38c
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi.c
-@@ -0,0 +1,1929 @@
+@@ -0,0 +1,1933 @@
 +/* Copyright (c) 2013-2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -466,7 +468,7 @@ index 0000000000000000000000000000000000000000..fcf96c7f7e553c584365fd6c585e4443
 +#define STATE_SLOT_SIZE (1024 * 1024)
 +#define STATE_SLOT_PAYLOAD (STATE_SLOT_SIZE - sizeof(uint64_t))
 +#define MULTI_STATE_VERSION 1
-+#define MULTI_FRONTEND_VERSION "0.3.0"
++#define MULTI_FRONTEND_VERSION "0.3.1"
 +#define MULTI_SUBSYSTEM_2 0x4D474202U
 +#define MULTI_SUBSYSTEM_3 0x4D474203U
 +
@@ -725,7 +727,8 @@ index 0000000000000000000000000000000000000000..fcf96c7f7e553c584365fd6c585e4443
 +	unsigned i;
 +	for (i = 0; i < MULTI_MAX_INSTANCES; ++i) {
 +		speedQuarters[i] = _requestedSpeedQuarters(i);
-+		speedEnabled[i] = speedQuarters[i] > MULTI_SPEED_ONE;
++		/* A configured target is armed by R2, never activated by loading content. */
++		speedEnabled[i] = false;
 +		speedPhase[i] = 0;
 +		speedTogglePressed[i] = false;
 +	}
@@ -737,7 +740,10 @@ index 0000000000000000000000000000000000000000..fcf96c7f7e553c584365fd6c585e4443
 +		unsigned requested = _requestedSpeedQuarters(i);
 +		if (requested != speedQuarters[i]) {
 +			speedQuarters[i] = requested;
-+			speedEnabled[i] = requested > MULTI_SPEED_ONE;
++			/* Editing a target must not silently turn acceleration on. */
++			if (requested <= MULTI_SPEED_ONE) {
++				speedEnabled[i] = false;
++			}
 +			speedPhase[i] = 0;
 +		}
 +	}
@@ -2318,7 +2324,7 @@ index 0000000000000000000000000000000000000000..fcf96c7f7e553c584365fd6c585e4443
 +}
 diff --git a/src/platform/libretro/mgba_multi_libretro.info b/src/platform/libretro/mgba_multi_libretro.info
 new file mode 100644
-index 0000000000000000000000000000000000000000..526559bc90f6a267ebf35a47326d1a1f78fb43e7
+index 0000000000000000000000000000000000000000..3e5bdb37dbabd215f52499f1a0ea024a07cacac9
 --- /dev/null
 +++ b/src/platform/libretro/mgba_multi_libretro.info
 @@ -0,0 +1,13 @@
@@ -2333,5 +2339,5 @@ index 0000000000000000000000000000000000000000..526559bc90f6a267ebf35a47326d1a1f
 +database = "Nintendo - Game Boy Advance|Nintendo - Game Boy Color|Nintendo - Game Boy"
 +license = "MPLv2"
 +permissions = ""
-+display_version = "0.11-dev-multi.0.3.0"
++display_version = "0.11-dev-multi.0.3.1"
 +supports_no_game = "false"

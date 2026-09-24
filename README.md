@@ -41,7 +41,7 @@ chmod +x scripts/*.sh
 The result is written to:
 
 ~~~text
-dist/RetroArchTV-mGBA-Multi-1.22.2-core-0.3.0-unsigned.ipa
+dist/RetroArchTV-mGBA-Multi-1.22.2-core-0.3.1-unsigned.ipa
 ~~~
 
 The script first validates the source revisions and patches, builds the custom
@@ -92,7 +92,9 @@ TVOS_DEPLOYMENT_TARGET=15.0 ./scripts/build-unsigned-ipa.sh
 
 Press **R2** on a player's controller to toggle only that player between 1x
 and its configured speed target. R2 is edge-triggered, so holding it will not
-repeatedly toggle. The toggle is intentionally locked to 1x during linked play.
+repeatedly toggle. Every content session starts at 1x, even when a faster target
+is configured; the first R2 press activates that target. Changing a target does
+not activate it. The toggle is intentionally locked to 1x during linked play.
 
 Normal **Load Content** duplicates one selected ROM across the configured
 instances. To run different games or versions, use **Load Subsystem** and pick
@@ -136,7 +138,7 @@ individual screen is stretched or cropped.
 | --- | --- |
 | RetroArch | 1.22.2 / `69a4f0ea1e8aaf442ae4858f2e7f2b31a1776576` |
 | mGBA base | `3a5bc24629867576b0fb576a5d5a21d3b3d6b576` |
-| mGBA Multi patch | core version 0.3.0 |
+| mGBA Multi patch | core version 0.3.1 |
 | tvOS architecture | arm64 device |
 
 See [LICENSES.md](LICENSES.md) for licensing and source obligations.
