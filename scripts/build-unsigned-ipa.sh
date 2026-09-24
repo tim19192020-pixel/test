@@ -165,7 +165,7 @@ fi
 [ "$(uname -s)" = "Darwin" ] ||
   fail "the final tvOS build requires macOS with Xcode"
 
-for command_name in cmake xcodebuild xcrun codesign shasum ditto; do
+for command_name in cmake xcodebuild xcrun codesign shasum ditto strings; do
   require_command "$command_name"
 done
 xcrun --sdk appletvos --show-sdk-path >/dev/null 2>&1 ||
@@ -195,6 +195,7 @@ cmake -S "$mgba_dir" -B "$core_build" -G Xcode \
   -DCMAKE_OSX_ARCHITECTURES=arm64 \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$tvos_target" \
   -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+  -DBUILD_LTO=ON \
   -DBUILD_LIBRETRO_MULTI=ON \
   -DBUILD_LIBRETRO=ON \
   -DBUILD_QT=OFF \
@@ -257,6 +258,15 @@ validate_core_dylib() {
 validate_core_dylib "$multi_core_dylib" "mGBA Multi core"
 validate_core_dylib "$stock_core_dylib" "stock mGBA core"
 
+if xcrun nm "$multi_core_dylib" | grep -E \
+  '_pthread_create|_mCoreThread(Start|Launch|Prepare)|_GBASIOLockstep|_GBSIOLockstep' >/dev/null; then
+  fail "mGBA Multi unexpectedly contains thread or link-cable symbols"
+fi
+if strings "$multi_core_dylib" | grep -E \
+  'mgba_multi_link|mgba_link_[23]|Local link cable|threaded link' >/dev/null; then
+  fail "mGBA Multi unexpectedly contains link-cable options or messages"
+fi
+
 module_dir="$retroarch_dir/pkg/apple/tvOS/modules"
 mkdir -p "$module_dir"
 multi_module_dylib="$module_dir/mgba_multi_libretro_tvos.dylib"
@@ -308,6 +318,9 @@ stock_core_framework="$app_path/Frameworks/mgba.libretro.framework/mgba.libretro
   fail "assets.zip is missing from the app bundle"
 unzip -l "$app_path/assets.zip" | grep -q 'info/mgba_multi_libretro.info' ||
   fail "mGBA Multi metadata is missing from the app bundle"
+unzip -p "$app_path/assets.zip" info/mgba_multi_libretro.info |
+  grep 'display_version = "0.11-dev-multi.0.4.0"' >/dev/null ||
+  fail "mGBA Multi 0.4.0 metadata is missing from the app bundle"
 unzip -l "$app_path/assets.zip" | grep -q 'info/mgba_libretro.info' ||
   fail "stock mGBA metadata is missing from the app bundle"
 

@@ -4,8 +4,8 @@ This kit builds an unsigned, device-only Apple TV IPA containing RetroArch
 1.22.2, the custom mGBA Multi libretro core, and the standard mGBA libretro
 core as a single-instance performance control. mGBA Multi renders one, two,
 or three emulators in a stable widescreen layout, supports independent
-per-player speed targets with controller toggles, keeps independent save
-files, and can connect compatible games through local emulated link support.
+per-player speed targets with controller toggles, and keeps independent save
+files. Version 0.4.0 removes link-cable emulation and all worker-thread paths.
 
 The source is fully pinned. No games, BIOS files, certificates, provisioning
 profiles, or precompiled app are included.
@@ -41,7 +41,7 @@ chmod +x scripts/*.sh
 The result is written to:
 
 ~~~text
-dist/RetroArchTV-mGBA-Multi-1.22.2-core-0.3.3-unsigned.ipa
+dist/RetroArchTV-mGBA-Multi-1.22.2-core-0.4.0-unsigned.ipa
 ~~~
 
 The script first validates the source revisions and patches, builds the custom
@@ -83,23 +83,22 @@ TVOS_DEPLOYMENT_TARGET=15.0 ./scripts/build-unsigned-ipa.sh
 3. Select the **Nintendo - Game Boy Advance / Color (mGBA Multi)** core.
 4. Open **Quick Menu > Core Options**.
 5. Set **Instances** to 1, 2, or 3.
-6. Set **Local link cable** on or off.
-7. Set the independent **Player 1/2/3 speed target** options from 1x through
+6. Set the independent **Player 1/2/3 speed target** options from 1x through
    3x in 0.25x steps.
-8. Use **Close Content**, then load it again after changing the instance count
-   or link option. RetroArch's **Restart** command only resets the existing
-   instances. Speed changes apply immediately.
-9. Assign controllers to RetroArch input ports 1 through 3.
+7. Use **Close Content**, then load it again after changing the instance count.
+   RetroArch's **Restart** command only resets the existing instances. Speed
+   changes apply immediately.
+8. Assign controllers to RetroArch input ports 1 through 3.
 
 Press **R2** on a player's controller to toggle only that player between 1x
 and its configured speed target. R2 is edge-triggered, so holding it will not
 repeatedly toggle. Every content session starts at 1x, even when a faster target
 is configured; the first R2 press activates that target. Changing a target does
-not activate it. The toggle is intentionally locked to 1x during linked play.
+not activate it.
 
 Normal **Load Content** duplicates one selected ROM across the configured
 instances. To run different games or versions, use **Load Subsystem** and pick
-either **mGBA Link Cable (2 ROMs)** or **mGBA Link Cable (3 ROMs)**.
+either **mGBA Multi (2 ROMs)** or **mGBA Multi (3 ROMs)**.
 
 ## Save layout
 
@@ -118,24 +117,19 @@ slot always share the same player number after content is restarted. The
 native-resolution screens are padded toward 16:9 and uniformly scaled, so no
 individual screen is stretched or cropped.
 
-## Link behavior
+## Performance behavior
 
-- GBA link emulation supports all active instances, up to three.
-- GB/GBC link emulation connects players 1 and 2. A third GB/GBC instance can
-  run beside them but is not linked because that cable protocol has two peers.
-- All linked instances must use the same hardware family.
-- Link support is local to the core and is separate from RetroArch netplay.
-- Compatibility still depends on the games using mutually compatible link
-  protocols.
-- Link is disabled by default. While it is enabled, all individual speed
-  controls and R2 toggles are held at 1x so linked systems remain synchronized.
-- Unlinked instances run directly on RetroArch's core thread, matching the
-  standard mGBA execution path and removing a worker-thread scheduling round
-  trip from every emulated frame. Linked sessions retain worker threads because
-  one emulated system may need to wait for another during cable communication.
+- The custom core is compiled with mGBA's `DISABLE_THREADING` configuration,
+  matching the standard libretro core. Every instance runs directly on the
+  RetroArch core thread; there are no emulation workers, condition-variable
+  waits, or link coordinators.
+- GBA audio uses the stock mGBA libretro core's moving-average frame pacing.
+  Per-instance audio queues have fixed limits and are trimmed to a bounded
+  carry window, so queued work cannot grow over time.
 - Extra speed frames remain interleaved across players. Video padding is only
-  cleared when the layout changes, and 1x audio uses a no-resampling fast path
-  to reduce CPU overhead during three-player sessions.
+  cleared when the layout changes, and 1x audio uses a no-resampling fast path.
+- Both cores are Release builds with link-time optimization enabled. The IPA
+  validator rejects the custom core if thread or link-cable symbols reappear.
 
 ## Pinned source
 
@@ -143,7 +137,7 @@ individual screen is stretched or cropped.
 | --- | --- |
 | RetroArch | 1.22.2 / `69a4f0ea1e8aaf442ae4858f2e7f2b31a1776576` |
 | mGBA base | `3a5bc24629867576b0fb576a5d5a21d3b3d6b576` |
-| mGBA Multi patch | core version 0.3.3 |
+| mGBA Multi patch | core version 0.4.0 |
 | tvOS architecture | arm64 device |
 
 See [LICENSES.md](LICENSES.md) for licensing and source obligations.
@@ -160,12 +154,8 @@ See [LICENSES.md](LICENSES.md) for licensing and source obligations.
   final bundle identifier.
 - **Only one game is shown multiple times:** that is the normal Load Content
   behavior. Use Load Subsystem to select separate ROMs.
-- **A speed option has no effect:** disable Local link cable and reload the
-  content. Linked instances intentionally remain at 1x.
 - **R2 does not change speed:** choose a target above 1x in Core Options and
   confirm that the controller is assigned to the intended RetroArch port.
-- **Link does not start:** enable Local link cable, use the same hardware
-  family, load link-compatible games, and reload content.
 - **Gameplay is still slow:** first disable RetroArch run-ahead, preemptive
   frames, and rewind. Then load the same game with **Nintendo - Game Boy
   Advance / Color (mGBA)**. If the standard core is also slow, the bottleneck

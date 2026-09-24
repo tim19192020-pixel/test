@@ -56,6 +56,9 @@ unzip -tq "$app_path/assets.zip" >/dev/null ||
   fail "embedded assets.zip failed its integrity check"
 unzip -l "$app_path/assets.zip" | grep -q 'info/mgba_multi_libretro.info' ||
   fail "mGBA Multi core metadata is missing"
+unzip -p "$app_path/assets.zip" info/mgba_multi_libretro.info |
+  grep 'display_version = "0.11-dev-multi.0.4.0"' >/dev/null ||
+  fail "mGBA Multi 0.4.0 metadata is missing"
 unzip -l "$app_path/assets.zip" | grep -q 'info/mgba_libretro.info' ||
   fail "stock mGBA core metadata is missing"
 
@@ -67,6 +70,7 @@ fi
 
 if [ "$(uname -s)" = "Darwin" ]; then
   command -v xcrun >/dev/null 2>&1 || fail "xcrun is unavailable"
+  command -v strings >/dev/null 2>&1 || fail "strings is unavailable"
 
   core_archs="$(xcrun lipo "$core_binary" -archs)" ||
     fail "could not inspect the mGBA Multi framework architectures"
@@ -78,6 +82,14 @@ if [ "$(uname -s)" = "Darwin" ]; then
     fail "could not inspect the mGBA Multi framework platform metadata"
   grep -qi 'platform.*TVOS' <<<"$core_build_info" ||
     fail "mGBA Multi framework is not a tvOS device binary"
+  if xcrun nm "$core_binary" | grep -E \
+    '_pthread_create|_mCoreThread(Start|Launch|Prepare)|_GBASIOLockstep|_GBSIOLockstep' >/dev/null; then
+    fail "mGBA Multi framework unexpectedly contains thread or link-cable symbols"
+  fi
+  if strings "$core_binary" | grep -E \
+    'mgba_multi_link|mgba_link_[23]|Local link cable|threaded link' >/dev/null; then
+    fail "mGBA Multi framework unexpectedly contains link-cable options or messages"
+  fi
 
   stock_core_archs="$(xcrun lipo "$stock_core_binary" -archs)" ||
     fail "could not inspect the stock mGBA framework architectures"

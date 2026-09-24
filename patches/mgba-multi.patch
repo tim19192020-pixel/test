@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 834e9fd9ceb94a972941fb7b12494270702601e8..c4b63b8b1da29600e32662063aed79ae20267d56 100644
+index 834e9fd..5136863 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -69,6 +69,7 @@ if(NOT LIBMGBA_ONLY)
@@ -55,22 +55,15 @@ index 834e9fd9ceb94a972941fb7b12494270702601e8..c4b63b8b1da29600e32662063aed79ae
  	add_library(${BINARY_NAME}_libretro SHARED ${CORE_SRC} ${RETRO_SRC} ${CORE_VFS_SRC})
  	add_dependencies(${BINARY_NAME}_libretro ${BINARY_NAME}-version-info)
  	set_target_properties(${BINARY_NAME}_libretro PROPERTIES PREFIX "" COMPILE_DEFINITIONS "__LIBRETRO__;COLOR_16_BIT;COLOR_5_6_5;DISABLE_THREADING;MGBA_STANDALONE;${OS_DEFINES};${FUNCTION_DEFINES};ENABLE_VFS;MINIMAL_CORE=2")
-@@ -1036,6 +1048,26 @@ if(BUILD_LIBRETRO)
+@@ -1036,6 +1048,19 @@ if(BUILD_LIBRETRO)
  	endif()
  endif()
  
 +if(BUILD_LIBRETRO_MULTI)
 +	set(RETRO_MULTI_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro/libretro_multi.c)
-+	set(RETRO_MULTI_LINK_SRC)
-+	if(M_CORE_GBA)
-+		list(APPEND RETRO_MULTI_LINK_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/gba/sio/lockstep.c)
-+	endif()
-+	if(M_CORE_GB)
-+		list(APPEND RETRO_MULTI_LINK_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/gb/sio/lockstep.c)
-+	endif()
-+	add_library(${BINARY_NAME}_multi_libretro SHARED ${CORE_SRC} ${RETRO_MULTI_LINK_SRC} ${RETRO_MULTI_SRC} ${CORE_VFS_SRC})
++	add_library(${BINARY_NAME}_multi_libretro SHARED ${CORE_SRC} ${RETRO_MULTI_SRC} ${CORE_VFS_SRC})
 +	add_dependencies(${BINARY_NAME}_multi_libretro ${BINARY_NAME}-version-info)
-+	set_target_properties(${BINARY_NAME}_multi_libretro PROPERTIES PREFIX "" COMPILE_DEFINITIONS "__LIBRETRO__;COLOR_16_BIT;COLOR_5_6_5;DISABLE_THREADED_VIDEO;MGBA_STANDALONE;${OS_DEFINES};${FUNCTION_DEFINES};ENABLE_VFS;MINIMAL_CORE=2")
++	set_target_properties(${BINARY_NAME}_multi_libretro PROPERTIES PREFIX "" COMPILE_DEFINITIONS "__LIBRETRO__;COLOR_16_BIT;COLOR_5_6_5;DISABLE_THREADING;MGBA_STANDALONE;${OS_DEFINES};${FUNCTION_DEFINES};ENABLE_VFS;MINIMAL_CORE=2")
 +	target_link_libraries(${BINARY_NAME}_multi_libretro ${OS_LIB})
 +	if(MSVC)
 +		install(TARGETS ${BINARY_NAME}_multi_libretro RUNTIME DESTINATION ${LIBRETRO_LIBDIR} COMPONENT ${BINARY_NAME}_multi_libretro)
@@ -82,7 +75,7 @@ index 834e9fd9ceb94a972941fb7b12494270702601e8..c4b63b8b1da29600e32662063aed79ae
  if(BUILD_QT AND (WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux") AND ENABLE_VFS)
  	set(BUILD_UPDATER ON)
  endif()
-@@ -1387,6 +1419,7 @@ if(NOT QUIET AND NOT LIBMGBA_ONLY)
+@@ -1387,6 +1412,7 @@ if(NOT QUIET AND NOT LIBMGBA_ONLY)
  	message(STATUS "	Video test suite: ${BUILD_CINEMA}")
  	message(STATUS "Cores:")
  	message(STATUS "	Libretro core: ${BUILD_LIBRETRO}")
@@ -92,10 +85,10 @@ index 834e9fd9ceb94a972941fb7b12494270702601e8..c4b63b8b1da29600e32662063aed79ae
  	message(STATUS "	Shared: ${BUILD_SHARED}")
 diff --git a/README_MULTI_LIBRETRO.md b/README_MULTI_LIBRETRO.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..65a5ce7b5833307daa74bfdc30ccb59d1ebb94ed
+index 0000000..31ef548
 --- /dev/null
 +++ b/README_MULTI_LIBRETRO.md
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,139 @@
 +# mGBA Multi libretro core
 +
 +This fork adds a separate `mGBA Multi` libretro target. It keeps the normal
@@ -106,30 +99,21 @@ index 0000000000000000000000000000000000000000..65a5ce7b5833307daa74bfdc30ccb59d
 +
 +- One to three local instances, with two as the default.
 +- Independent controllers on RetroArch ports 1, 2, and 3.
-+- Independent speed targets from 1x to 3x in 0.25x steps for every unlinked
-+  instance, with an R2 toggle on each player's controller.
++- Independent speed targets from 1x to 3x in 0.25x steps for every instance,
++  with an R2 toggle on each player's controller.
 +- One mixed audio stream, or audio from a selected player.
 +- Separate battery saves for every instance.
 +- One combined RetroArch save state containing every running instance.
-+- Local GBA link emulation for two or three instances.
-+- Local GB/GBC link emulation for players 1 and 2. A third GB/GBC instance can
-+  run beside them but is not connected, matching the two-peer cable protocol.
 +- RetroArch subsystems for loading two or three different ROMs. Normal
 +  **Load Content** duplicates the selected ROM for the configured number of
 +  instances.
 +
-+Link emulation is disabled by default so unlinked instances can run at full
-+speed and use independent speed multipliers. Enable it only for games that
-+need cable communication.
-+
-+Unlinked instances execute directly on RetroArch's core thread, matching the
-+standard mGBA libretro execution path and avoiding a worker-thread scheduling
-+round trip on every frame. Linked sessions retain worker threads because one
-+emulated system may need to wait for another during cable communication.
++Version 0.4.0 removes link-cable emulation and all worker-thread paths. Every
++instance executes directly on RetroArch's core thread, and the target is built
++with the same `DISABLE_THREADING` configuration as the standard mGBA libretro
++core.
 +
 +## Build
-+
-+A desktop build with working thread support is required.
 +
 +```sh
 +cmake -S . -B build-multi \
@@ -180,13 +164,12 @@ index 0000000000000000000000000000000000000000..65a5ce7b5833307daa74bfdc30ccb59d
 +
 +1. Load the **mGBA Multi** core.
 +2. Open **Quick Menu > Core Options**.
-+3. Set **Instances** to 1, 2, or 3 and choose whether **Local link cable** is
-+   enabled.
++3. Set **Instances** to 1, 2, or 3.
 +4. Set **Player 1 speed target**, **Player 2 speed target**, and **Player 3
 +   speed target** as needed.
 +5. Use **Close Content**, then load the content again after changing the
-+   instance count or link setting. RetroArch's **Restart** command only resets
-+   the already-running instances. Speed changes apply immediately.
++   instance count. RetroArch's **Restart** command only resets the already-
++   running instances. Speed changes apply immediately.
 +6. Assign controllers to RetroArch ports 1 through 3.
 +
 +Press **R2** on a player's controller to toggle only that player between 1x
@@ -197,8 +180,7 @@ index 0000000000000000000000000000000000000000..65a5ce7b5833307daa74bfdc30ccb59d
 +
 +Loading one ROM through **Load Content** runs that ROM in every instance. To
 +use different games or versions, use RetroArch's **Load Subsystem** flow and
-+choose either **mGBA Link Cable (2 ROMs)** or
-+**mGBA Link Cable (3 ROMs)**.
++choose either **mGBA Multi (2 ROMs)** or **mGBA Multi (3 ROMs)**.
 +
 +## Screen layout and speed
 +
@@ -219,16 +201,15 @@ index 0000000000000000000000000000000000000000..65a5ce7b5833307daa74bfdc30ccb59d
 +Individual speed targets advance only the selected instance. Targets are
 +available in 0.25x steps from 1x through 3x, and each controller's R2 button
 +toggles its own target on or off. Audio from a sped-up instance is resampled
-+into the normal frontend time window. Link cable sessions force all players to
-+1x because linked systems must share a timeline.
++into the normal frontend time window.
 +
-+For unlinked play, all instances run directly and extra frames are scheduled
-+round-robin. This removes the per-frame worker-thread waits used by earlier
-+versions and keeps normal 1x execution on the same path as the standard mGBA
-+libretro core. Video, audio, and periodic saves are collected only after every
-+active instance reaches its frame boundary, so one player cannot accumulate
-+timing or audio debt. The compositor clears widescreen padding only when the
-+layout changes, and the common 1x audio path avoids resampling work.
++All instances run directly and extra frames are scheduled round-robin. Video,
++audio, and periodic saves are collected only after every active instance
++reaches its frame boundary. GBA audio uses the same moving-average pacing as
++the standard mGBA libretro core. Each audio queue has a fixed hard limit and a
++one-frame carry limit, so neither queued data nor per-frame work can grow over
++time. The compositor clears widescreen padding only when the layout changes,
++and the common 1x audio path avoids resampling work.
 +
 +## Save files
 +
@@ -246,159 +227,13 @@ index 0000000000000000000000000000000000000000..65a5ce7b5833307daa74bfdc30ccb59d
 +container that stores all active instances together; it must be loaded with
 +the same instance count.
 +
-+## Link behavior and limitations
-+
-+- Link emulation is local to the instances inside this core. It is separate
-+  from RetroArch netplay.
-+- All linked instances must use the same hardware family. Mixed GB/GBC and
-+  GBA subsystem loads still run, but link is disabled.
-+- GBA connects all active instances (up to three). GB/GBC connects only
-+  players 1 and 2.
-+- Link compatibility still depends on the games themselves. For trading or
-+  multiplayer, load ROMs that implement mutually compatible link protocols.
-+- The instance count and link topology are fixed for a content session and
-+  take effect after content is closed and loaded again.
-+- Individual speed controls and R2 toggles are held at 1x while link emulation
-+  is active.
-+
 +This fork retains mGBA's Mozilla Public License 2.0 licensing.
-diff --git a/include/mgba/core/thread.h b/include/mgba/core/thread.h
-index 7164f6409cc9aec8df893df64d495a6f38b9c3f7..aebd19523187816b102f084b515d8444fe7b09b3 100644
---- a/include/mgba/core/thread.h
-+++ b/include/mgba/core/thread.h
-@@ -102,6 +102,9 @@ struct mCoreThreadInternal {
- #endif
- 
- bool mCoreThreadStart(struct mCoreThread* threadContext);
-+bool mCoreThreadPrepare(struct mCoreThread* threadContext);
-+bool mCoreThreadLaunch(struct mCoreThread* threadContext);
-+void mCoreThreadUnprepare(struct mCoreThread* threadContext);
- bool mCoreThreadHasStarted(struct mCoreThread* threadContext);
- bool mCoreThreadHasExited(struct mCoreThread* threadContext);
- void mCoreThreadEnd(struct mCoreThread* threadContext);
-diff --git a/src/core/thread.c b/src/core/thread.c
-index 87a6dc9fc74d28f457eb6166ee9e30b7ebb66c9d..e3f7387efcd56d5fbe9c5e8b2d2205326112a045 100644
---- a/src/core/thread.c
-+++ b/src/core/thread.c
-@@ -423,8 +423,14 @@ static THREAD_ENTRY _mCoreThreadRun(void* context) {
- 	THREAD_EXIT(0);
- }
- 
--bool mCoreThreadStart(struct mCoreThread* threadContext) {
-+bool mCoreThreadPrepare(struct mCoreThread* threadContext) {
-+	if (threadContext->impl) {
-+		return false;
-+	}
- 	threadContext->impl = calloc(1, sizeof(*threadContext->impl));
-+	if (!threadContext->impl) {
-+		return false;
-+	}
- 	threadContext->impl->state = mTHREAD_INITIALIZED;
- 	threadContext->impl->requested = 0;
- 	threadContext->logger.p = threadContext;
-@@ -452,6 +458,13 @@ bool mCoreThreadStart(struct mCoreThread* threadContext) {
- #endif
- 
- 	mCoreSyncLoadCoreOpts(&threadContext->impl->sync, &threadContext->core->opts);
-+	return true;
-+}
-+
-+bool mCoreThreadLaunch(struct mCoreThread* threadContext) {
-+	if (!threadContext->impl || threadContext->impl->state != mTHREAD_INITIALIZED) {
-+		return false;
-+	}
- 
- 	MutexLock(&threadContext->impl->stateMutex);
- 	ThreadCreate(&threadContext->impl->thread, _mCoreThreadRun, threadContext);
-@@ -463,6 +476,33 @@ bool mCoreThreadStart(struct mCoreThread* threadContext) {
- 	return true;
- }
- 
-+bool mCoreThreadStart(struct mCoreThread* threadContext) {
-+	if (!mCoreThreadPrepare(threadContext)) {
-+		return false;
-+	}
-+	if (!mCoreThreadLaunch(threadContext)) {
-+		mCoreThreadUnprepare(threadContext);
-+		return false;
-+	}
-+	return true;
-+}
-+
-+void mCoreThreadUnprepare(struct mCoreThread* threadContext) {
-+	if (!threadContext->impl || threadContext->impl->state != mTHREAD_INITIALIZED) {
-+		return;
-+	}
-+	MutexDeinit(&threadContext->impl->stateMutex);
-+	ConditionDeinit(&threadContext->impl->stateOnThreadCond);
-+	ConditionDeinit(&threadContext->impl->stateOffThreadCond);
-+	MutexDeinit(&threadContext->impl->sync.videoFrameMutex);
-+	ConditionDeinit(&threadContext->impl->sync.videoFrameAvailableCond);
-+	ConditionDeinit(&threadContext->impl->sync.videoFrameRequiredCond);
-+	ConditionDeinit(&threadContext->impl->sync.audioRequiredCond);
-+	MutexDeinit(&threadContext->impl->sync.audioBufferMutex);
-+	free(threadContext->impl);
-+	threadContext->impl = NULL;
-+}
-+
- bool mCoreThreadHasStarted(struct mCoreThread* threadContext) {
- 	if (!threadContext->impl) {
- 		return false;
-diff --git a/src/gba/core.c b/src/gba/core.c
-index 8450f0d25d4b8e933b56370d01ba050f0a7f1405..60e35e1e82364a82fbd9b67e11b84d29ea40fa86 100644
---- a/src/gba/core.c
-+++ b/src/gba/core.c
-@@ -16,7 +16,7 @@
- #include <mgba/internal/gba/io.h>
- #include <mgba/internal/gba/debugger/cli.h>
- #include <mgba/internal/gba/overrides.h>
--#ifndef DISABLE_THREADING
-+#if !defined(DISABLE_THREADING) && !defined(DISABLE_THREADED_VIDEO)
- #include <mgba/feature/thread-proxy.h>
- #endif
- #ifdef BUILD_GLES3
-@@ -208,7 +208,7 @@ struct GBACore {
- 	struct mVideoLogContext* logContext;
- #endif
- 	struct mCoreCallbacks logCallbacks;
--#ifndef DISABLE_THREADING
-+#if !defined(DISABLE_THREADING) && !defined(DISABLE_THREADED_VIDEO)
- 	struct mVideoThreadProxy threadProxy;
- #endif
- 	struct mCPUComponent* components[CPU_COMPONENT_MAX];
-@@ -291,7 +291,7 @@ static bool _GBACoreInit(struct mCore* core) {
- 	gbacore->glRenderer.outputTex = -1;
- #endif
- 
--#ifndef DISABLE_THREADING
-+#if !defined(DISABLE_THREADING) && !defined(DISABLE_THREADED_VIDEO)
- 	mVideoThreadProxyCreate(&gbacore->threadProxy);
- #endif
- #ifndef MINIMAL_CORE
-@@ -389,7 +389,7 @@ static void _GBACoreLoadConfig(struct mCore* core, const struct mCoreConfig* con
- 	mCoreConfigCopyValue(&core->config, config, "gba.forceGbp");
- 	mCoreConfigCopyValue(&core->config, config, "vbaBugCompat");
- 
--#ifndef DISABLE_THREADING
-+#if !defined(DISABLE_THREADING) && !defined(DISABLE_THREADED_VIDEO)
- 	mCoreConfigCopyValue(&core->config, config, "threadedVideo");
- #endif
- 	mCoreConfigCopyValue(&core->config, config, "hwaccelVideo");
-@@ -755,7 +755,7 @@ static void _GBACoreReset(struct mCore* core) {
- 			gbacore->glRenderer.scale = 1;
- 		}
- #endif
--#ifndef DISABLE_THREADING
-+#if !defined(DISABLE_THREADING) && !defined(DISABLE_THREADED_VIDEO)
- 		if (mCoreConfigGetBoolValue(&core->config, "threadedVideo", &value) && value) {
- 			if (!core->videoLogger) {
- 				core->videoLogger = &gbacore->threadProxy.d;
 diff --git a/src/platform/libretro/libretro_multi.c b/src/platform/libretro/libretro_multi.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c299568719
+index 0000000..25dece2
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi.c
-@@ -0,0 +1,1984 @@
+@@ -0,0 +1,1542 @@
 +/* Copyright (c) 2013-2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -419,15 +254,12 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +#include <mgba-util/common.h>
 +#include <mgba-util/audio-buffer.h>
 +#include <mgba-util/memory.h>
-+#include <mgba-util/threading.h>
 +#include <mgba-util/vfs.h>
 +
 +#include <mgba/core/cheats.h>
 +#include <mgba/core/core.h>
 +#include <mgba/core/log.h>
 +#include <mgba/core/serialize.h>
-+#include <mgba/core/sync.h>
-+#include <mgba/core/thread.h>
 +#include <mgba/core/version.h>
 +
 +#ifdef M_CORE_GB
@@ -435,8 +267,6 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +#include <mgba/internal/gb/gb.h>
 +#include <mgba/internal/gb/mbc.h>
 +#include <mgba/internal/gb/overrides.h>
-+#include <mgba/internal/gb/sio.h>
-+#include <mgba/internal/gb/sio/lockstep.h>
 +#endif
 +
 +
@@ -444,7 +274,6 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +#include <mgba/gba/core.h>
 +#include <mgba/gba/interface.h>
 +#include <mgba/internal/gba/gba.h>
-+#include <mgba/internal/gba/sio/lockstep.h>
 +#endif
 +
 +#include <ctype.h>
@@ -455,10 +284,6 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
-+
-+#ifdef DISABLE_THREADING
-+#error "The multi-instance libretro core requires threading support"
-+#endif
 +
 +#define MULTI_MAX_INSTANCES 3
 +#define INPUT_DESCRIPTORS_PER_PORT 11
@@ -471,31 +296,21 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +#define COMPOSITE_HEIGHT_MAX COMPOSITE_GRID_HEIGHT_MAX
 +#define VIDEO_BUFFER_PIXELS (VIDEO_WIDTH_MAX * VIDEO_HEIGHT_MAX)
 +#define COMPOSITE_BUFFER_PIXELS (COMPOSITE_WIDTH_MAX * COMPOSITE_HEIGHT_MAX)
-+#define AUDIO_BUFFER_FRAMES 8192
++#define AUDIO_BUFFER_LIMIT 0x4000
++#define AUDIO_MOVING_AVG_ALPHA (1.0f / 180.0f)
 +#define SAVE_BUFFER_SIZE (128 * 1024)
 +#define AUTOSAVE_INTERVAL_FRAMES 300
 +#define STATE_HEADER_SIZE 32
 +#define STATE_SLOT_SIZE (1024 * 1024)
 +#define STATE_SLOT_PAYLOAD (STATE_SLOT_SIZE - sizeof(uint64_t))
 +#define MULTI_STATE_VERSION 1
-+#define MULTI_FRONTEND_VERSION "0.3.3"
++#define MULTI_FRONTEND_VERSION "0.4.0"
 +#define MULTI_SUBSYSTEM_2 0x4D474202U
 +#define MULTI_SUBSYSTEM_3 0x4D474203U
 +
-+struct MultiGBAUser {
-+#ifdef M_CORE_GBA
-+	struct mLockstepThreadUser threaded;
-+#endif
-+	int preferredId;
-+};
-+
 +struct MultiInstance {
 +	struct mCore* core;
-+	struct mCoreThread thread;
 +	bool coreInitialized;
-+	bool threadPrepared;
-+	bool threadStarted;
-+	bool linkAttached;
 +
 +	mColor* video;
 +	void* romData;
@@ -506,14 +321,8 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +
 +	int16_t* audio;
 +	size_t audioCapacity;
-+
-+#ifdef M_CORE_GBA
-+	struct GBASIOLockstepDriver gbaLink;
-+	struct MultiGBAUser gbaUser;
-+#endif
-+#ifdef M_CORE_GB
-+	struct GBSIOLockstepNode gbLink;
-+#endif
++	size_t nominalAudioFrames;
++	float audioFramesPerRunAvg;
 +};
 +
 +struct MultiPlacement {
@@ -529,18 +338,6 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +	struct MultiPlacement placements[MULTI_MAX_INSTANCES];
 +};
 +
-+#ifdef M_CORE_GB
-+struct GBLinkContext {
-+	struct GBSIOLockstep lockstep;
-+	Mutex mutex;
-+	struct MultiInstance* players[2];
-+	int awake[2];
-+	int32_t cyclesPosted[2];
-+	unsigned waitMask;
-+	bool initialized;
-+};
-+#endif
-+
 +static retro_environment_t environCallback;
 +static retro_video_refresh_t videoCallback;
 +static retro_audio_sample_batch_t audioCallback;
@@ -551,13 +348,9 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +static struct mLogger logger;
 +static struct MultiInstance instances[MULTI_MAX_INSTANCES];
 +static unsigned instanceCount;
-+static bool linkRequested;
-+static bool linkActive;
 +static bool deferredSetup;
-+static bool threadsStarted;
 +static bool useBitmasks = true;
 +static bool warnedRestart;
-+static bool warnedLinkSpeed;
 +static unsigned autosaveCounter;
 +static unsigned audioSource;
 +static unsigned speedQuarters[MULTI_MAX_INSTANCES] = {
@@ -578,14 +371,6 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +static bool previousLayoutValid;
 +static char libraryVersion[64];
 +
-+#ifdef M_CORE_GBA
-+static struct GBASIOLockstepCoordinator gbaCoordinator;
-+static bool gbaCoordinatorInitialized;
-+#endif
-+#ifdef M_CORE_GB
-+static struct GBLinkContext gbLinkContext;
-+#endif
-+
 +static const int keymap[] = {
 +	RETRO_DEVICE_ID_JOYPAD_A,
 +	RETRO_DEVICE_ID_JOYPAD_B,
@@ -601,7 +386,6 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +
 +static const struct retro_variable coreVariables[] = {
 +	{ "mgba_multi_instances", "Instances (restart content); 2|1|3" },
-+	{ "mgba_multi_link", "Local link cable (restart content); disabled|enabled" },
 +	{ "mgba_multi_speed_p1", "Player 1 speed target (R2 toggle, top-left); 1x|1.25x|1.50x|1.75x|2x|2.25x|2.50x|2.75x|3x" },
 +	{ "mgba_multi_speed_p2", "Player 2 speed target (R2 toggle, top-right); 1x|1.25x|1.50x|1.75x|2x|2.25x|2.50x|2.75x|3x" },
 +	{ "mgba_multi_speed_p3", "Player 3 speed target (R2 toggle, bottom-center); 1x|1.25x|1.50x|1.75x|2x|2.25x|2.50x|2.75x|3x" },
@@ -638,8 +422,8 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +};
 +
 +static const struct retro_subsystem_info subsystemInfo[] = {
-+	{ "mGBA Link Cable (2 ROMs)", "mgba_link_2", subsystem2Roms, 2, MULTI_SUBSYSTEM_2 },
-+	{ "mGBA Link Cable (3 ROMs)", "mgba_link_3", subsystem3Roms, 3, MULTI_SUBSYSTEM_3 },
++	{ "mGBA Multi (2 ROMs)", "mgba_multi_2", subsystem2Roms, 2, MULTI_SUBSYSTEM_2 },
++	{ "mGBA Multi (3 ROMs)", "mgba_multi_3", subsystem3Roms, 3, MULTI_SUBSYSTEM_3 },
 +	{ NULL, NULL, NULL, 0, 0 },
 +};
 +
@@ -703,11 +487,6 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +	return (unsigned) count;
 +}
 +
-+static bool _requestedLink(void) {
-+	const char* value = _getVariable("mgba_multi_link");
-+	return value && strcmp(value, "enabled") == 0;
-+}
-+
 +static unsigned _requestedSpeedQuarters(unsigned player) {
 +	static const char* keys[MULTI_MAX_INSTANCES] = {
 +		"mgba_multi_speed_p1",
@@ -760,7 +539,7 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +}
 +
 +static unsigned _effectiveSpeedQuarters(unsigned player) {
-+	if (linkActive || player >= instanceCount) {
++	if (player >= instanceCount) {
 +		return MULTI_SPEED_ONE;
 +	}
 +	return speedEnabled[player] ? speedQuarters[player] : MULTI_SPEED_ONE;
@@ -771,28 +550,6 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +	unsigned steps = speedPhase[player] / MULTI_SPEED_ONE;
 +	speedPhase[player] %= MULTI_SPEED_ONE;
 +	return steps;
-+}
-+
-+static void _updateLinkSpeedWarning(void) {
-+	bool linkSpeedRequested = false;
-+	unsigned i;
-+	for (i = 0; i < instanceCount; ++i) {
-+		if (speedQuarters[i] > MULTI_SPEED_ONE) {
-+			linkSpeedRequested = true;
-+			break;
-+		}
-+	}
-+	if (linkActive && linkSpeedRequested && !warnedLinkSpeed) {
-+		struct retro_message message = {
-+			"Individual speed is held at 1x while link cable is enabled",
-+			240,
-+		};
-+		environCallback(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
-+		_frontendLog(RETRO_LOG_WARN, "%s", message.msg);
-+		warnedLinkSpeed = true;
-+	} else if (!linkActive || !linkSpeedRequested) {
-+		warnedLinkSpeed = false;
-+	}
 +}
 +
 +static unsigned _requestedAudioSource(void) {
@@ -813,8 +570,6 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +	struct mCoreOptions opts = {
 +		.useBios = true,
 +		.volume = 0x100,
-+		.videoSync = true,
-+		.audioSync = false,
 +	};
 +
 +	const char* value = _getVariable("mgba_use_bios");
@@ -890,11 +645,10 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +	}
 +	audioSource = _requestedAudioSource();
 +	_updateSpeedSettings();
-+	_updateLinkSpeedWarning();
 +
-+	if (!warnedRestart && (_requestedInstanceCount() != instanceCount || _requestedLink() != linkRequested)) {
++	if (!warnedRestart && _requestedInstanceCount() != instanceCount) {
 +		struct retro_message message = {
-+			"Instance count/link change applies after content restart",
++			"Instance count change applies after content restart",
 +			240,
 +		};
 +		environCallback(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
@@ -1157,29 +911,43 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +
 +	instance->video = malloc(VIDEO_BUFFER_PIXELS * sizeof(*instance->video));
 +	instance->saveData = anonymousMemoryMap(SAVE_BUFFER_SIZE);
-+	instance->audioCapacity = AUDIO_BUFFER_FRAMES;
-+	instance->audio = malloc(instance->audioCapacity * 2 * sizeof(*instance->audio));
-+	if (!instance->video || !instance->saveData || !instance->audio) {
++	if (!instance->video || !instance->saveData) {
 +		return false;
 +	}
 +	memset(instance->video, 0, VIDEO_BUFFER_PIXELS * sizeof(*instance->video));
 +	memset(instance->saveData, 0xFF, SAVE_BUFFER_SIZE);
 +	instance->core->setVideoBuffer(instance->core, instance->video, VIDEO_WIDTH_MAX);
-+	instance->core->setAudioBufferSize(instance->core, AUDIO_BUFFER_FRAMES);
 +
 +	if (!instance->core->loadROM(instance->core, rom)) {
 +		_frontendLog(RETRO_LOG_ERROR, "player %u ROM failed to load", player + 1);
 +		return false;
 +	}
++	double nominalAudioFrames = instance->core->audioSampleRate(instance->core) *
++	                            (double) instance->core->frameCycles(instance->core) /
++	                            instance->core->frequency(instance->core);
++	instance->nominalAudioFrames = (size_t) nominalAudioFrames;
++	if (!instance->nominalAudioFrames) {
++		instance->nominalAudioFrames = 1;
++	}
++	instance->audioFramesPerRunAvg = (float) instance->nominalAudioFrames;
++	/* A core can run up to three frames for one frontend frame. Four nominal
++	 * frames leave the same one-frame variation margin used by stock mGBA,
++	 * while the hard cap makes queue size and per-frame work strictly bounded. */
++	instance->audioCapacity = instance->nominalAudioFrames * (MULTI_SPEED_MAX / MULTI_SPEED_ONE + 1);
++	if (instance->audioCapacity > AUDIO_BUFFER_LIMIT) {
++		instance->audioCapacity = AUDIO_BUFFER_LIMIT;
++	}
++	instance->audio = malloc(instance->audioCapacity * 2 * sizeof(*instance->audio));
++	if (!instance->audio) {
++		return false;
++	}
++	instance->core->setAudioBufferSize(instance->core, instance->audioCapacity);
 +	_loadBios(instance);
 +	instance->core->reset(instance->core);
 +
 +	_buildSavePath(instance, player);
 +	_readOwnedSave(instance);
 +
-+	memset(&instance->thread, 0, sizeof(instance->thread));
-+	instance->thread.core = instance->core;
-+	instance->thread.logger.logger = &logger;
 +	return true;
 +}
 +
@@ -1199,249 +967,6 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +	memset(instance, 0, sizeof(*instance));
 +}
 +
-+#ifdef M_CORE_GBA
-+static int _gbaRequestedId(struct mLockstepUser* user) {
-+	struct MultiGBAUser* multiUser = (struct MultiGBAUser*) user;
-+	return multiUser->preferredId;
-+}
-+
-+static void _gbaSleep(struct mLockstepUser* user) {
-+	struct MultiGBAUser* multiUser = (struct MultiGBAUser*) user;
-+	struct mCoreThread* thread = multiUser->threaded.thread;
-+	if (thread && thread->impl) {
-+		mCoreThreadWaitFromThread(thread);
-+	}
-+}
-+
-+static void _gbaWake(struct mLockstepUser* user) {
-+	struct MultiGBAUser* multiUser = (struct MultiGBAUser*) user;
-+	struct mCoreThread* thread = multiUser->threaded.thread;
-+	if (thread && thread->impl) {
-+		mCoreThreadStopWaiting(thread);
-+	}
-+}
-+#endif
-+
-+#ifdef M_CORE_GB
-+static struct GBLinkContext* _gbContext(struct mLockstep* lockstep) {
-+	return lockstep->context;
-+}
-+
-+static void _gbLock(struct mLockstep* lockstep) {
-+	MutexLock(&_gbContext(lockstep)->mutex);
-+}
-+
-+static void _gbUnlock(struct mLockstep* lockstep) {
-+	MutexUnlock(&_gbContext(lockstep)->mutex);
-+}
-+
-+static bool _gbSignal(struct mLockstep* lockstep, unsigned mask) {
-+	struct GBLinkContext* context = _gbContext(lockstep);
-+	bool woke = false;
-+	context->waitMask &= ~mask;
-+	if (!context->waitMask && context->awake[0] < 1 && context->players[0]->thread.impl) {
-+		mCoreThreadStopWaiting(&context->players[0]->thread);
-+		context->awake[0] = 1;
-+		woke = true;
-+	}
-+	return woke;
-+}
-+
-+static bool _gbWait(struct mLockstep* lockstep, unsigned mask) {
-+	struct GBLinkContext* context = _gbContext(lockstep);
-+	bool slept = false;
-+	context->waitMask |= mask;
-+	if (context->awake[0] > 0 && context->players[0]->thread.impl) {
-+		mCoreThreadWaitFromThread(&context->players[0]->thread);
-+		context->awake[0] = 0;
-+		slept = true;
-+	}
-+	return slept;
-+}
-+
-+static void _gbAddCycles(struct mLockstep* lockstep, int id, int32_t cycles) {
-+	struct GBLinkContext* context = _gbContext(lockstep);
-+	if (cycles < 0 || id < 0 || id > 1) {
-+		return;
-+	}
-+	if (!id) {
-+		id = 1;
-+		if (context->players[id]->thread.impl) {
-+			mCoreSyncSetVideoSync(&context->players[id]->thread.impl->sync, false);
-+		}
-+		context->cyclesPosted[id] += cycles;
-+		if (context->awake[id] < 1) {
-+			context->players[id]->gbLink.nextEvent += context->cyclesPosted[id];
-+		}
-+		if (context->players[id]->thread.impl) {
-+			mCoreThreadStopWaiting(&context->players[id]->thread);
-+		}
-+		context->awake[id] = 1;
-+	} else {
-+		if (context->players[id]->thread.impl) {
-+			mCoreSyncSetVideoSync(&context->players[id]->thread.impl->sync, true);
-+		}
-+		context->cyclesPosted[id] += cycles;
-+	}
-+}
-+
-+static int32_t _gbUseCycles(struct mLockstep* lockstep, int id, int32_t cycles) {
-+	struct GBLinkContext* context = _gbContext(lockstep);
-+	if (id < 0 || id > 1) {
-+		return 0;
-+	}
-+	context->cyclesPosted[id] -= cycles;
-+	if (context->cyclesPosted[id] <= 0 && context->players[id]->thread.impl) {
-+		mCoreThreadWaitFromThread(&context->players[id]->thread);
-+		context->awake[id] = 0;
-+	}
-+	return context->cyclesPosted[id];
-+}
-+
-+static int32_t _gbUnusedCycles(struct mLockstep* lockstep, int id) {
-+	struct GBLinkContext* context = _gbContext(lockstep);
-+	return id >= 0 && id <= 1 ? context->cyclesPosted[id] : 0;
-+}
-+
-+static void _gbUnload(struct mLockstep* lockstep, int id) {
-+	struct GBLinkContext* context = _gbContext(lockstep);
-+	if (id == 1 && context->players[1]) {
-+		context->cyclesPosted[1] = 0;
-+		if (context->players[1]->thread.impl) {
-+			mCoreSyncSetVideoSync(&context->players[1]->thread.impl->sync, true);
-+		}
-+		if (context->players[0]) {
-+			context->waitMask &= ~(1U << 1);
-+			if (!context->waitMask && context->awake[0] < 1 && context->players[0]->thread.impl) {
-+				mCoreThreadStopWaiting(&context->players[0]->thread);
-+				context->awake[0] = 1;
-+			}
-+		}
-+	} else if (id == 0 && context->players[1]) {
-+		context->cyclesPosted[1] += context->lockstep.players[0] ? context->lockstep.players[0]->eventDiff : 0;
-+		if (context->awake[1] < 1 && context->players[1]->thread.impl) {
-+			context->players[1]->gbLink.nextEvent += context->cyclesPosted[1];
-+			mCoreThreadStopWaiting(&context->players[1]->thread);
-+			context->awake[1] = 1;
-+		}
-+	}
-+}
-+#endif
-+
-+static bool _setupLink(void) {
-+	linkActive = false;
-+	if (!linkRequested || instanceCount < 2) {
-+		return true;
-+	}
-+
-+	enum mPlatform platform = instances[0].core->platform(instances[0].core);
-+	unsigned i;
-+	for (i = 1; i < instanceCount; ++i) {
-+		if (instances[i].core->platform(instances[i].core) != platform) {
-+			_frontendLog(RETRO_LOG_WARN, "link disabled because players use different hardware families");
-+			return true;
-+		}
-+	}
-+
-+	switch (platform) {
-+#ifdef M_CORE_GBA
-+	case mPLATFORM_GBA:
-+		GBASIOLockstepCoordinatorInit(&gbaCoordinator);
-+		gbaCoordinatorInitialized = true;
-+		for (i = 0; i < instanceCount; ++i) {
-+			struct MultiInstance* instance = &instances[i];
-+			mLockstepThreadUserInit(&instance->gbaUser.threaded, &instance->thread);
-+			instance->gbaUser.preferredId = (int) i;
-+			instance->gbaUser.threaded.d.sleep = _gbaSleep;
-+			instance->gbaUser.threaded.d.wake = _gbaWake;
-+			instance->gbaUser.threaded.d.requestedId = _gbaRequestedId;
-+			GBASIOLockstepDriverCreate(&instance->gbaLink, &instance->gbaUser.threaded.d);
-+			GBASIOLockstepCoordinatorAttach(&gbaCoordinator, &instance->gbaLink);
-+			instance->core->setPeripheral(instance->core, mPERIPH_GBA_LINK_PORT, &instance->gbaLink.d);
-+			instance->linkAttached = true;
-+		}
-+		linkActive = true;
-+		_frontendLog(RETRO_LOG_INFO, "linked %u Game Boy Advance instances", instanceCount);
-+		return true;
-+#endif
-+#ifdef M_CORE_GB
-+	case mPLATFORM_GB: {
-+		struct GBLinkContext* context = &gbLinkContext;
-+		memset(context, 0, sizeof(*context));
-+		mLockstepInit(&context->lockstep.d);
-+		GBSIOLockstepInit(&context->lockstep);
-+		MutexInit(&context->mutex);
-+		context->initialized = true;
-+		context->lockstep.d.context = context;
-+		context->lockstep.d.lock = _gbLock;
-+		context->lockstep.d.unlock = _gbUnlock;
-+		context->lockstep.d.signal = _gbSignal;
-+		context->lockstep.d.wait = _gbWait;
-+		context->lockstep.d.addCycles = _gbAddCycles;
-+		context->lockstep.d.useCycles = _gbUseCycles;
-+		context->lockstep.d.unusedCycles = _gbUnusedCycles;
-+		context->lockstep.d.unload = _gbUnload;
-+		context->awake[0] = 1;
-+		context->awake[1] = 1;
-+
-+		unsigned linked = instanceCount < 2 ? instanceCount : 2;
-+		for (i = 0; i < linked; ++i) {
-+			struct MultiInstance* instance = &instances[i];
-+			context->players[i] = instance;
-+			GBSIOLockstepNodeCreate(&instance->gbLink);
-+			if (!GBSIOLockstepAttachNode(&context->lockstep, &instance->gbLink)) {
-+				return false;
-+			}
-+			GBSIOSetDriver(&((struct GB*) instance->core->board)->sio, &instance->gbLink.d);
-+			instance->linkAttached = true;
-+		}
-+		linkActive = linked == 2;
-+		if (instanceCount > 2) {
-+			_frontendLog(RETRO_LOG_WARN, "GB/GBC link cable supports two peers; player 3 remains unlinked");
-+		}
-+		_frontendLog(RETRO_LOG_INFO, "linked two Game Boy/Game Boy Color instances");
-+		return true;
-+	}
-+#endif
-+	default:
-+		return true;
-+	}
-+}
-+
-+static void _teardownLink(void) {
-+	unsigned i;
-+#ifdef M_CORE_GBA
-+	if (gbaCoordinatorInitialized) {
-+		for (i = 0; i < instanceCount; ++i) {
-+			if (!instances[i].linkAttached) {
-+				continue;
-+			}
-+			instances[i].core->setPeripheral(instances[i].core, mPERIPH_GBA_LINK_PORT, NULL);
-+			GBASIOLockstepCoordinatorDetach(&gbaCoordinator, &instances[i].gbaLink);
-+			instances[i].linkAttached = false;
-+		}
-+		GBASIOLockstepCoordinatorDeinit(&gbaCoordinator);
-+		gbaCoordinatorInitialized = false;
-+	}
-+#endif
-+#ifdef M_CORE_GB
-+	if (gbLinkContext.initialized) {
-+		for (i = 0; i < instanceCount && i < 2; ++i) {
-+			if (!instances[i].linkAttached) {
-+				continue;
-+			}
-+			GBSIOSetDriver(&((struct GB*) instances[i].core->board)->sio, NULL);
-+			GBSIOLockstepDetachNode(&gbLinkContext.lockstep, &instances[i].gbLink);
-+			instances[i].linkAttached = false;
-+		}
-+		mLockstepDeinit(&gbLinkContext.lockstep.d);
-+		MutexDeinit(&gbLinkContext.mutex);
-+		memset(&gbLinkContext, 0, sizeof(gbLinkContext));
-+	}
-+#endif
-+	linkActive = false;
-+}
-+
 +static bool _finishDeferredSetup(void) {
 +	if (!deferredSetup) {
 +		return true;
@@ -1457,30 +982,10 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +			return false;
 +		}
 +	}
-+	if (!_setupLink()) {
-+		_frontendLog(RETRO_LOG_ERROR, "link cable setup failed");
-+		return false;
-+	}
-+	/* Unlinked cores run directly on RetroArch's execution thread. Besides
-+	 * avoiding a condition-variable round trip for every frame, this keeps
-+	 * normal 1x play on the same path as the standard mGBA libretro core.
-+	 * Link emulation can block one core while another responds, so linked
-+	 * sessions still require one worker thread per instance. */
-+	if (linkActive) {
-+		for (i = 0; i < instanceCount; ++i) {
-+			if (!mCoreThreadPrepare(&instances[i].thread)) {
-+				_frontendLog(RETRO_LOG_ERROR, "player %u emulation thread failed to prepare", i + 1);
-+				return false;
-+			}
-+			instances[i].threadPrepared = true;
-+		}
-+	}
-+	_updateLinkSpeedWarning();
 +	deferredSetup = false;
 +	char messageText[96];
-+	snprintf(messageText, sizeof(messageText), "mGBA Multi 0.3.3: %u instance%s, %s mode",
-+	         instanceCount, instanceCount == 1 ? "" : "s",
-+	         linkActive ? "threaded link" : "direct unlinked");
++	snprintf(messageText, sizeof(messageText), "mGBA Multi 0.4.0: %u instance%s, direct single-thread mode",
++	         instanceCount, instanceCount == 1 ? "" : "s");
 +	struct retro_message message = {
 +		messageText,
 +		240,
@@ -1490,75 +995,10 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +	return true;
 +}
 +
-+static bool _startThreads(void) {
-+	if (threadsStarted) {
-+		return true;
-+	}
-+	if (!_finishDeferredSetup()) {
-+		return false;
-+	}
-+	if (!linkActive) {
-+		return true;
-+	}
-+	unsigned i;
-+	for (i = 0; i < instanceCount; ++i) {
-+		if (!mCoreThreadLaunch(&instances[i].thread)) {
-+			_frontendLog(RETRO_LOG_ERROR, "player %u emulation thread failed to start", i + 1);
-+			return false;
-+		}
-+		instances[i].threadStarted = true;
-+	}
-+	threadsStarted = true;
-+	return true;
-+}
-+
-+static void _stopThreads(void) {
-+	unsigned i;
-+	for (i = 0; i < instanceCount; ++i) {
-+		if (instances[i].threadStarted) {
-+			mCoreThreadEnd(&instances[i].thread);
-+		}
-+	}
-+	for (i = 0; i < instanceCount; ++i) {
-+		if (instances[i].threadStarted) {
-+			mCoreThreadJoin(&instances[i].thread);
-+			instances[i].threadStarted = false;
-+			instances[i].threadPrepared = false;
-+		} else if (instances[i].threadPrepared) {
-+			mCoreThreadUnprepare(&instances[i].thread);
-+			instances[i].threadPrepared = false;
-+		}
-+	}
-+	threadsStarted = false;
-+}
-+
-+static void _interruptThreads(void) {
-+	if (!threadsStarted) {
-+		return;
-+	}
-+	unsigned i;
-+	for (i = 0; i < instanceCount; ++i) {
-+		mCoreThreadInterrupt(&instances[i].thread);
-+	}
-+}
-+
-+static void _continueThreads(void) {
-+	if (!threadsStarted) {
-+		return;
-+	}
-+	unsigned i = instanceCount;
-+	while (i) {
-+		--i;
-+		mCoreThreadContinue(&instances[i].thread);
-+	}
-+}
-+
 +static void _unloadAll(void) {
 +	if (!instanceCount) {
 +		return;
 +	}
-+	_stopThreads();
-+	_teardownLink();
 +
 +	unsigned i;
 +	for (i = 1; i < instanceCount; ++i) {
@@ -1569,9 +1009,7 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +	}
 +	instanceCount = 0;
 +	deferredSetup = false;
-+	linkRequested = false;
 +	warnedRestart = false;
-+	warnedLinkSpeed = false;
 +	autosaveCounter = 0;
 +	compositeWidth = 0;
 +	compositeHeight = 0;
@@ -1584,7 +1022,6 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +		return false;
 +	}
 +	instanceCount = (unsigned) count;
-+	linkRequested = _requestedLink();
 +	audioSource = _requestedAudioSource();
 +	_initializeSpeedSettings();
 +
@@ -1601,7 +1038,6 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +
 +	deferredSetup = true;
 +	warnedRestart = false;
-+	warnedLinkSpeed = false;
 +	autosaveCounter = 0;
 +	return true;
 +}
@@ -1637,9 +1073,7 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +
 +static void _handleSpeedToggle(unsigned player, bool pressed) {
 +	if (pressed && !speedTogglePressed[player]) {
-+		if (linkActive) {
-+			_showSpeedMessage(player, "locked at 1x while link cable is enabled");
-+		} else if (speedQuarters[player] <= MULTI_SPEED_ONE) {
++		if (speedQuarters[player] <= MULTI_SPEED_ONE) {
 +			_showSpeedMessage(player, "target is 1x; choose a faster target in Core Options");
 +		} else {
 +			speedEnabled[player] = !speedEnabled[player];
@@ -1795,6 +1229,9 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +	if (instance->audioCapacity >= frames) {
 +		return true;
 +	}
++	if (frames > AUDIO_BUFFER_LIMIT) {
++		return false;
++	}
 +	int16_t* audio = realloc(instance->audio, frames * 2 * sizeof(*audio));
 +	if (!audio) {
 +		return false;
@@ -1805,7 +1242,7 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +}
 +
 +static void _mixAudio(const unsigned* frameSteps);
-+static void _periodicSave(bool coresFrozen);
++static void _periodicSave(void);
 +static bool _serializeCore(struct MultiInstance*, uint8_t*);
 +static bool _unserializeCore(struct MultiInstance*, const uint8_t*);
 +
@@ -1961,9 +1398,9 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +		return;
 +	}
 +	inputPollCallback();
-+	if (deferredSetup || (linkActive && !threadsStarted)) {
++	if (deferredSetup) {
 +		_setInputs(false);
-+		if (!_startThreads()) {
++		if (!_finishDeferredSetup()) {
 +			videoCallback(NULL, 0, 0, 0);
 +			return;
 +		}
@@ -1983,32 +1420,19 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +		frameSteps[i] = _scheduleSpeed(i);
 +	}
 +
-+	if (linkActive) {
++	unsigned maxSteps = 1;
++	for (i = 0; i < instanceCount; ++i) {
++		if (frameSteps[i] > maxSteps) {
++			maxSteps = frameSteps[i];
++		}
++	}
++	unsigned step;
++	for (step = 0; step < maxSteps; ++step) {
 +		for (i = 0; i < instanceCount; ++i) {
-+			unsigned step;
-+			for (step = 0; step < frameSteps[i]; ++step) {
-+				mCoreSyncWaitFrameStart(&instances[i].thread.impl->sync);
++			if (frameSteps[i] > step) {
++				instances[i].core->runFrame(instances[i].core);
 +				if (validLayout && step + 1 == frameSteps[i]) {
 +					_copyInstanceVideo(i, &layout);
-+				}
-+				mCoreSyncWaitFrameEnd(&instances[i].thread.impl->sync);
-+			}
-+		}
-+	} else {
-+		unsigned maxSteps = 1;
-+		for (i = 0; i < instanceCount; ++i) {
-+			if (frameSteps[i] > maxSteps) {
-+				maxSteps = frameSteps[i];
-+			}
-+		}
-+		unsigned step;
-+		for (step = 0; step < maxSteps; ++step) {
-+			for (i = 0; i < instanceCount; ++i) {
-+				if (frameSteps[i] > step) {
-+					instances[i].core->runFrame(instances[i].core);
-+					if (validLayout && step + 1 == frameSteps[i]) {
-+						_copyInstanceVideo(i, &layout);
-+					}
 +				}
 +			}
 +		}
@@ -2019,9 +1443,7 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +		videoCallback(NULL, 0, 0, 0);
 +	}
 +	_mixAudio(frameSteps);
-+	/* Direct unlinked execution is already stopped at a frame boundary, so
-+	 * save snapshots need neither locks nor per-core thread interruptions. */
-+	_periodicSave(!threadsStarted);
++	_periodicSave();
 +}
 +
 +void retro_reset(void) {
@@ -2031,21 +1453,7 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +	unsigned i;
 +	for (i = 0; i < instanceCount; ++i) {
 +		speedPhase[i] = 0;
-+	}
-+	if (!threadsStarted) {
-+		for (i = 0; i < instanceCount; ++i) {
-+			instances[i].core->reset(instances[i].core);
-+		}
-+		return;
-+	}
-+	for (i = 0; i < instanceCount; ++i) {
-+		mCoreSyncSetVideoSync(&instances[i].thread.impl->sync, false);
-+	}
-+	for (i = 0; i < instanceCount; ++i) {
-+		mCoreThreadReset(&instances[i].thread);
-+	}
-+	for (i = 0; i < instanceCount; ++i) {
-+		mCoreSyncSetVideoSync(&instances[i].thread.impl->sync, true);
++		instances[i].core->reset(instances[i].core);
 +	}
 +}
 +
@@ -2054,16 +1462,15 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +}
 +
 +bool retro_serialize(void* data, size_t size) {
-+	if (!instanceCount || !data || size < retro_serialize_size() || !_startThreads()) {
++	if (!instanceCount || !data || size < retro_serialize_size() || !_finishDeferredSetup()) {
 +		return false;
 +	}
-+	_interruptThreads();
 +	uint8_t* output = data;
 +	memset(output, 0, retro_serialize_size());
 +	memcpy(output, "MGBAMUL1", 8);
 +	STORE_32LE(MULTI_STATE_VERSION, 8, output);
 +	STORE_32LE(instanceCount, 12, output);
-+	STORE_32LE(linkActive ? 1 : 0, 16, output);
++	STORE_32LE(0, 16, output);
 +	STORE_32LE(STATE_SLOT_SIZE, 20, output);
 +	bool success = true;
 +	unsigned i;
@@ -2073,12 +1480,11 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +			break;
 +		}
 +	}
-+	_continueThreads();
 +	return success;
 +}
 +
 +bool retro_unserialize(const void* data, size_t size) {
-+	if (!instanceCount || !data || size < STATE_HEADER_SIZE || !_startThreads()) {
++	if (!instanceCount || !data || size < STATE_HEADER_SIZE || !_finishDeferredSetup()) {
 +		return false;
 +	}
 +	const uint8_t* input = data;
@@ -2092,7 +1498,6 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +	    size < STATE_HEADER_SIZE + instanceCount * STATE_SLOT_SIZE) {
 +		return false;
 +	}
-+	_interruptThreads();
 +	bool success = true;
 +	unsigned i;
 +	for (i = 0; i < instanceCount; ++i) {
@@ -2101,7 +1506,6 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +			break;
 +		}
 +	}
-+	_continueThreads();
 +	if (success) {
 +		for (i = 0; i < instanceCount; ++i) {
 +			speedPhase[i] = 0;
@@ -2155,15 +1559,9 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +	if (!enabled) {
 +		return;
 +	}
-+	if (threadsStarted) {
-+		_interruptThreads();
-+	}
 +	unsigned i;
 +	for (i = 0; i < instanceCount; ++i) {
 +		_setCheat(instances[i].core, code);
-+	}
-+	if (threadsStarted) {
-+		_continueThreads();
 +	}
 +}
 +
@@ -2212,23 +1610,38 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +	size_t outputFrames = SIZE_MAX;
 +	unsigned i;
 +	for (i = 0; i < instanceCount; ++i) {
-+		if (threadsStarted) {
-+			mCoreSyncLockAudio(&instances[i].thread.impl->sync);
-+		}
-+		available[i] = mAudioBufferAvailable(instances[i].core->getAudioBuffer(instances[i].core));
++		struct MultiInstance* instance = &instances[i];
++		struct mAudioBuffer* buffer = instance->core->getAudioBuffer(instance->core);
++		available[i] = mAudioBufferAvailable(buffer);
 +		size_t normalizedFrames = available[i] / frameSteps[i];
-+		if (normalizedFrames < outputFrames) {
-+			outputFrames = normalizedFrames;
++		size_t targetFrames = normalizedFrames;
++#ifdef M_CORE_GBA
++		if (instance->core->platform(instance->core) == mPLATFORM_GBA) {
++			/* This is the same leaky average used by stock mGBA's libretro
++			 * frontend. It prevents alternating GBA sample counts from turning
++			 * into frontend frame-pacing jitter. */
++			instance->audioFramesPerRunAvg = AUDIO_MOVING_AVG_ALPHA * (float) normalizedFrames +
++			        (1.0f - AUDIO_MOVING_AVG_ALPHA) * instance->audioFramesPerRunAvg;
++			targetFrames = (size_t) instance->audioFramesPerRunAvg;
++			if (targetFrames > normalizedFrames) {
++				targetFrames = normalizedFrames;
++			}
++		}
++#endif
++		if (targetFrames < outputFrames) {
++			outputFrames = targetFrames;
 +		}
 +	}
 +
 +	if (outputFrames == SIZE_MAX || !outputFrames) {
++		/* A silent/starting instance must not let another instance accumulate
++		 * an ever-growing latency queue. Each core buffer is fixed-size, and
++		 * this tighter trim retains at most one scheduled frame of carry. */
 +		for (i = 0; i < instanceCount; ++i) {
-+			if (!linkActive) {
-+				mAudioBufferRead(instances[i].core->getAudioBuffer(instances[i].core), NULL, available[i]);
-+			}
-+			if (threadsStarted) {
-+				mCoreSyncConsumeAudio(&instances[i].thread.impl->sync);
++			size_t carryLimit = instances[i].nominalAudioFrames * frameSteps[i];
++			if (available[i] > carryLimit) {
++				mAudioBufferRead(instances[i].core->getAudioBuffer(instances[i].core), NULL,
++				                 available[i] - carryLimit);
 +			}
 +		}
 +		return;
@@ -2237,8 +1650,7 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +	bool allocationFailed = false;
 +	for (i = 0; i < instanceCount; ++i) {
 +		framesToRead[i] = outputFrames * frameSteps[i];
-+		size_t bufferedFrames = linkActive ? framesToRead[i] : available[i];
-+		if (!_ensureAudioCapacity(&instances[i], bufferedFrames)) {
++		if (!_ensureAudioCapacity(&instances[i], framesToRead[i])) {
 +			allocationFailed = true;
 +			break;
 +		}
@@ -2254,28 +1666,19 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +	}
 +	if (allocationFailed) {
 +		for (i = 0; i < instanceCount; ++i) {
-+			if (!linkActive) {
-+				mAudioBufferRead(instances[i].core->getAudioBuffer(instances[i].core), NULL, available[i]);
-+			}
-+			if (threadsStarted) {
-+				mCoreSyncConsumeAudio(&instances[i].thread.impl->sync);
-+			}
++			mAudioBufferClear(instances[i].core->getAudioBuffer(instances[i].core));
 +		}
 +		return;
 +	}
 +
 +	for (i = 0; i < instanceCount; ++i) {
-+		size_t bufferedFrames = linkActive ? framesToRead[i] : available[i];
-+		mAudioBufferRead(instances[i].core->getAudioBuffer(instances[i].core), instances[i].audio, bufferedFrames);
-+		if (threadsStarted) {
-+			mCoreSyncConsumeAudio(&instances[i].thread.impl->sync);
++		struct mAudioBuffer* buffer = instances[i].core->getAudioBuffer(instances[i].core);
++		size_t carryLimit = instances[i].nominalAudioFrames * frameSteps[i];
++		size_t maxBuffered = framesToRead[i] + carryLimit;
++		if (available[i] > maxBuffered) {
++			mAudioBufferRead(buffer, NULL, available[i] - maxBuffered);
 +		}
-+	}
-+	size_t sourceOffsets[MULTI_MAX_INSTANCES] = { 0 };
-+	if (!linkActive) {
-+		for (i = 0; i < instanceCount; ++i) {
-+			sourceOffsets[i] = available[i] - framesToRead[i];
-+		}
++		mAudioBufferRead(buffer, instances[i].audio, framesToRead[i]);
 +	}
 +
 +	bool needsResampling = false;
@@ -2287,15 +1690,14 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +	}
 +	if (!needsResampling) {
 +		if (audioSource > 0 && audioSource <= instanceCount) {
-+			unsigned player = audioSource - 1;
-+			memcpy(mixedAudio, &instances[player].audio[sourceOffsets[player] * 2],
++			memcpy(mixedAudio, instances[audioSource - 1].audio,
 +			       outputFrames * 2 * sizeof(*mixedAudio));
 +		} else {
 +			size_t sample;
 +			for (sample = 0; sample < outputFrames * 2; ++sample) {
 +				int32_t value = 0;
 +				for (i = 0; i < instanceCount; ++i) {
-+					value += instances[i].audio[sourceOffsets[i] * 2 + sample];
++					value += instances[i].audio[sample];
 +				}
 +				mixedAudio[sample] = (int16_t) (value / (int32_t) instanceCount);
 +			}
@@ -2307,17 +1709,14 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +	size_t frame;
 +	if (audioSource > 0 && audioSource <= instanceCount) {
 +		unsigned player = audioSource - 1;
-+		size_t sourceFrame = sourceOffsets[player];
++		size_t sourceFrame = 0;
 +		for (frame = 0; frame < outputFrames; ++frame) {
 +			mixedAudio[frame * 2] = instances[player].audio[sourceFrame * 2];
 +			mixedAudio[frame * 2 + 1] = instances[player].audio[sourceFrame * 2 + 1];
 +			sourceFrame += frameSteps[player];
 +		}
 +	} else {
-+		size_t sourceFrame[MULTI_MAX_INSTANCES];
-+		for (i = 0; i < instanceCount; ++i) {
-+			sourceFrame[i] = sourceOffsets[i];
-+		}
++		size_t sourceFrame[MULTI_MAX_INSTANCES] = { 0 };
 +		for (frame = 0; frame < outputFrames; ++frame) {
 +			int32_t left = 0;
 +			int32_t right = 0;
@@ -2333,20 +1732,14 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +	audioCallback(mixedAudio, outputFrames);
 +}
 +
-+static void _periodicSave(bool coresFrozen) {
++static void _periodicSave(void) {
 +	if (++autosaveCounter < AUTOSAVE_INTERVAL_FRAMES) {
 +		return;
 +	}
 +	autosaveCounter = 0;
-+	if (!coresFrozen) {
-+		_interruptThreads();
-+	}
 +	unsigned i;
 +	for (i = 1; i < instanceCount; ++i) {
 +		_writeOwnedSave(&instances[i]);
-+	}
-+	if (!coresFrozen) {
-+		_continueThreads();
 +	}
 +}
 +
@@ -2385,7 +1778,7 @@ index 0000000000000000000000000000000000000000..6b26ee943688f2d8e6c44f221196e6c2
 +}
 diff --git a/src/platform/libretro/mgba_multi_libretro.info b/src/platform/libretro/mgba_multi_libretro.info
 new file mode 100644
-index 0000000000000000000000000000000000000000..1fe5bc073f24e69ce3947a7b97fb12f6c9e3ec91
+index 0000000..2cdb396
 --- /dev/null
 +++ b/src/platform/libretro/mgba_multi_libretro.info
 @@ -0,0 +1,13 @@
@@ -2400,5 +1793,5 @@ index 0000000000000000000000000000000000000000..1fe5bc073f24e69ce3947a7b97fb12f6
 +database = "Nintendo - Game Boy Advance|Nintendo - Game Boy Color|Nintendo - Game Boy"
 +license = "MPLv2"
 +permissions = ""
-+display_version = "0.11-dev-multi.0.3.3"
++display_version = "0.11-dev-multi.0.4.0"
 +supports_no_game = "false"
