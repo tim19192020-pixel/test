@@ -41,7 +41,7 @@ chmod +x scripts/*.sh
 The result is written to:
 
 ~~~text
-dist/RetroArchTV-mGBA-Multi-1.22.2-core-0.3.1-unsigned.ipa
+dist/RetroArchTV-mGBA-Multi-1.22.2-core-0.3.2-unsigned.ipa
 ~~~
 
 The script first validates the source revisions and patches, builds the custom
@@ -128,7 +128,11 @@ individual screen is stretched or cropped.
   protocols.
 - Link is disabled by default. While it is enabled, all individual speed
   controls and R2 toggles are held at 1x so linked systems remain synchronized.
-- Unlinked extra frames are interleaved across players. Video padding is only
+- Unlinked instances meet at a shared final-frame barrier before video, audio,
+  and periodic save snapshots are collected. Audio queues are drained at that
+  boundary and unlinked saves no longer interrupt each emulation thread. This
+  prevents timing and audio debt from accumulating during long sessions.
+- Extra speed frames remain interleaved across players. Video padding is only
   cleared when the layout changes, and 1x audio uses a no-resampling fast path
   to reduce CPU overhead during three-player sessions.
 
@@ -138,7 +142,7 @@ individual screen is stretched or cropped.
 | --- | --- |
 | RetroArch | 1.22.2 / `69a4f0ea1e8aaf442ae4858f2e7f2b31a1776576` |
 | mGBA base | `3a5bc24629867576b0fb576a5d5a21d3b3d6b576` |
-| mGBA Multi patch | core version 0.3.1 |
+| mGBA Multi patch | core version 0.3.2 |
 | tvOS architecture | arm64 device |
 
 See [LICENSES.md](LICENSES.md) for licensing and source obligations.

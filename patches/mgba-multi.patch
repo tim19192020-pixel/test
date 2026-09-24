@@ -92,10 +92,10 @@ index 834e9fd9ceb94a972941fb7b12494270702601e8..c4b63b8b1da29600e32662063aed79ae
  	message(STATUS "	Shared: ${BUILD_SHARED}")
 diff --git a/README_MULTI_LIBRETRO.md b/README_MULTI_LIBRETRO.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..36b413e5ddb0615354ae891e3d3a4f58545ee24f
+index 0000000000000000000000000000000000000000..be7fe87b9e776f2bacffddcf1619a6ae0fd837a8
 --- /dev/null
 +++ b/README_MULTI_LIBRETRO.md
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,160 @@
 +# mGBA Multi libretro core
 +
 +This fork adds a separate `mGBA Multi` libretro target. It keeps the normal
@@ -217,8 +217,12 @@ index 0000000000000000000000000000000000000000..36b413e5ddb0615354ae891e3d3a4f58
 +1x because linked systems must share a timeline.
 +
 +For unlinked play, extra frames are scheduled round-robin so one sped-up player
-+does not stall the others. The compositor clears its widescreen padding only
-+when the layout changes, and the common 1x audio path avoids resampling work.
++does not stall the others. All players finish on a shared frame barrier before
++video, audio, and periodic saves are delivered. This prevents earlier players
++from running ahead and accumulating audio or scheduling debt during long
++sessions. Save snapshots use that existing barrier rather than interrupting
++the emulation threads. The compositor clears its widescreen padding only when
++the layout changes, and the common 1x audio path avoids resampling work.
 +
 +## Save files
 +
@@ -385,10 +389,10 @@ index 8450f0d25d4b8e933b56370d01ba050f0a7f1405..60e35e1e82364a82fbd9b67e11b84d29
  				core->videoLogger = &gbacore->threadProxy.d;
 diff --git a/src/platform/libretro/libretro_multi.c b/src/platform/libretro/libretro_multi.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..843b0b97fa97ab235907e80905c732413647f38c
+index 0000000000000000000000000000000000000000..ba98ce20fb2bd76505e81f537554cc508fa10155
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi.c
-@@ -0,0 +1,1933 @@
+@@ -0,0 +1,1978 @@
 +/* Copyright (c) 2013-2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -468,7 +472,7 @@ index 0000000000000000000000000000000000000000..843b0b97fa97ab235907e80905c73241
 +#define STATE_SLOT_SIZE (1024 * 1024)
 +#define STATE_SLOT_PAYLOAD (STATE_SLOT_SIZE - sizeof(uint64_t))
 +#define MULTI_STATE_VERSION 1
-+#define MULTI_FRONTEND_VERSION "0.3.1"
++#define MULTI_FRONTEND_VERSION "0.3.2"
 +#define MULTI_SUBSYSTEM_2 0x4D474202U
 +#define MULTI_SUBSYSTEM_3 0x4D474203U
 +
@@ -1775,7 +1779,7 @@ index 0000000000000000000000000000000000000000..843b0b97fa97ab235907e80905c73241
 +}
 +
 +static void _mixAudio(const unsigned* frameSteps);
-+static void _periodicSave(void);
++static void _periodicSave(bool coresFrozen);
 +static bool _serializeCore(struct MultiInstance*, uint8_t*);
 +static bool _unserializeCore(struct MultiInstance*, const uint8_t*);
 +
@@ -1948,6 +1952,7 @@ index 0000000000000000000000000000000000000000..843b0b97fa97ab235907e80905c73241
 +	struct MultiLayout layout;
 +	bool validLayout = _prepareComposite(&layout);
 +	unsigned frameSteps[MULTI_MAX_INSTANCES] = { 1, 1, 1 };
++	bool heldFrames[MULTI_MAX_INSTANCES] = { false, false, false };
 +	unsigned i;
 +	for (i = 0; i < instanceCount; ++i) {
 +		frameSteps[i] = _scheduleSpeed(i);
@@ -1973,13 +1978,26 @@ index 0000000000000000000000000000000000000000..843b0b97fa97ab235907e80905c73241
 +		}
 +		unsigned step;
 +		for (step = 0; step < maxSteps; ++step) {
++			/* Keep each player's final frame at one shared barrier. Releasing a
++			 * final frame early lets that thread enter the next frame while the
++			 * remaining players are still being collected. */
 +			for (i = 0; i < instanceCount; ++i) {
 +				if (frameSteps[i] > step) {
 +					mCoreSyncWaitFrameStart(&instances[i].thread.impl->sync);
-+					if (validLayout && step + 1 == frameSteps[i]) {
-+						_copyInstanceVideo(i, &layout);
++				}
++			}
++			for (i = 0; i < instanceCount; ++i) {
++				if (frameSteps[i] > step && validLayout && step + 1 == frameSteps[i]) {
++					_copyInstanceVideo(i, &layout);
++				}
++			}
++			for (i = 0; i < instanceCount; ++i) {
++				if (frameSteps[i] > step) {
++					if (step + 1 == frameSteps[i]) {
++						heldFrames[i] = true;
++					} else {
++						mCoreSyncWaitFrameEnd(&instances[i].thread.impl->sync);
 +					}
-+					mCoreSyncWaitFrameEnd(&instances[i].thread.impl->sync);
 +				}
 +			}
 +		}
@@ -1990,7 +2008,16 @@ index 0000000000000000000000000000000000000000..843b0b97fa97ab235907e80905c73241
 +		videoCallback(NULL, 0, 0, 0);
 +	}
 +	_mixAudio(frameSteps);
-+	_periodicSave();
++	/* Unlinked final frames are still held here, so save memory is stable
++	 * without interrupting and desynchronizing the emulation threads. */
++	_periodicSave(!linkActive);
++	if (!linkActive) {
++		for (i = 0; i < instanceCount; ++i) {
++			if (heldFrames[i]) {
++				mCoreSyncWaitFrameEnd(&instances[i].thread.impl->sync);
++			}
++		}
++	}
 +}
 +
 +void retro_reset(void) {
@@ -2191,6 +2218,9 @@ index 0000000000000000000000000000000000000000..843b0b97fa97ab235907e80905c73241
 +
 +	if (outputFrames == SIZE_MAX || !outputFrames) {
 +		for (i = 0; i < instanceCount; ++i) {
++			if (!linkActive) {
++				mAudioBufferRead(instances[i].core->getAudioBuffer(instances[i].core), NULL, available[i]);
++			}
 +			mCoreSyncConsumeAudio(&instances[i].thread.impl->sync);
 +		}
 +		return;
@@ -2199,7 +2229,8 @@ index 0000000000000000000000000000000000000000..843b0b97fa97ab235907e80905c73241
 +	bool allocationFailed = false;
 +	for (i = 0; i < instanceCount; ++i) {
 +		framesToRead[i] = outputFrames * frameSteps[i];
-+		if (!_ensureAudioCapacity(&instances[i], framesToRead[i])) {
++		size_t bufferedFrames = linkActive ? framesToRead[i] : available[i];
++		if (!_ensureAudioCapacity(&instances[i], bufferedFrames)) {
 +			allocationFailed = true;
 +			break;
 +		}
@@ -2215,14 +2246,24 @@ index 0000000000000000000000000000000000000000..843b0b97fa97ab235907e80905c73241
 +	}
 +	if (allocationFailed) {
 +		for (i = 0; i < instanceCount; ++i) {
++			if (!linkActive) {
++				mAudioBufferRead(instances[i].core->getAudioBuffer(instances[i].core), NULL, available[i]);
++			}
 +			mCoreSyncConsumeAudio(&instances[i].thread.impl->sync);
 +		}
 +		return;
 +	}
 +
 +	for (i = 0; i < instanceCount; ++i) {
-+		mAudioBufferRead(instances[i].core->getAudioBuffer(instances[i].core), instances[i].audio, framesToRead[i]);
++		size_t bufferedFrames = linkActive ? framesToRead[i] : available[i];
++		mAudioBufferRead(instances[i].core->getAudioBuffer(instances[i].core), instances[i].audio, bufferedFrames);
 +		mCoreSyncConsumeAudio(&instances[i].thread.impl->sync);
++	}
++	size_t sourceOffsets[MULTI_MAX_INSTANCES] = { 0 };
++	if (!linkActive) {
++		for (i = 0; i < instanceCount; ++i) {
++			sourceOffsets[i] = available[i] - framesToRead[i];
++		}
 +	}
 +
 +	bool needsResampling = false;
@@ -2234,14 +2275,15 @@ index 0000000000000000000000000000000000000000..843b0b97fa97ab235907e80905c73241
 +	}
 +	if (!needsResampling) {
 +		if (audioSource > 0 && audioSource <= instanceCount) {
-+			memcpy(mixedAudio, instances[audioSource - 1].audio,
++			unsigned player = audioSource - 1;
++			memcpy(mixedAudio, &instances[player].audio[sourceOffsets[player] * 2],
 +			       outputFrames * 2 * sizeof(*mixedAudio));
 +		} else {
 +			size_t sample;
 +			for (sample = 0; sample < outputFrames * 2; ++sample) {
 +				int32_t value = 0;
 +				for (i = 0; i < instanceCount; ++i) {
-+					value += instances[i].audio[sample];
++					value += instances[i].audio[sourceOffsets[i] * 2 + sample];
 +				}
 +				mixedAudio[sample] = (int16_t) (value / (int32_t) instanceCount);
 +			}
@@ -2253,14 +2295,17 @@ index 0000000000000000000000000000000000000000..843b0b97fa97ab235907e80905c73241
 +	size_t frame;
 +	if (audioSource > 0 && audioSource <= instanceCount) {
 +		unsigned player = audioSource - 1;
-+		size_t sourceFrame = 0;
++		size_t sourceFrame = sourceOffsets[player];
 +		for (frame = 0; frame < outputFrames; ++frame) {
 +			mixedAudio[frame * 2] = instances[player].audio[sourceFrame * 2];
 +			mixedAudio[frame * 2 + 1] = instances[player].audio[sourceFrame * 2 + 1];
 +			sourceFrame += frameSteps[player];
 +		}
 +	} else {
-+		size_t sourceFrame[MULTI_MAX_INSTANCES] = { 0 };
++		size_t sourceFrame[MULTI_MAX_INSTANCES];
++		for (i = 0; i < instanceCount; ++i) {
++			sourceFrame[i] = sourceOffsets[i];
++		}
 +		for (frame = 0; frame < outputFrames; ++frame) {
 +			int32_t left = 0;
 +			int32_t right = 0;
@@ -2276,17 +2321,21 @@ index 0000000000000000000000000000000000000000..843b0b97fa97ab235907e80905c73241
 +	audioCallback(mixedAudio, outputFrames);
 +}
 +
-+static void _periodicSave(void) {
++static void _periodicSave(bool coresFrozen) {
 +	if (++autosaveCounter < AUTOSAVE_INTERVAL_FRAMES) {
 +		return;
 +	}
 +	autosaveCounter = 0;
-+	_interruptThreads();
++	if (!coresFrozen) {
++		_interruptThreads();
++	}
 +	unsigned i;
 +	for (i = 1; i < instanceCount; ++i) {
 +		_writeOwnedSave(&instances[i]);
 +	}
-+	_continueThreads();
++	if (!coresFrozen) {
++		_continueThreads();
++	}
 +}
 +
 +static bool _serializeCore(struct MultiInstance* instance, uint8_t* slot) {
@@ -2324,7 +2373,7 @@ index 0000000000000000000000000000000000000000..843b0b97fa97ab235907e80905c73241
 +}
 diff --git a/src/platform/libretro/mgba_multi_libretro.info b/src/platform/libretro/mgba_multi_libretro.info
 new file mode 100644
-index 0000000000000000000000000000000000000000..3e5bdb37dbabd215f52499f1a0ea024a07cacac9
+index 0000000000000000000000000000000000000000..feec0e209808c87e187e09c50619a2ae352c207b
 --- /dev/null
 +++ b/src/platform/libretro/mgba_multi_libretro.info
 @@ -0,0 +1,13 @@
@@ -2339,5 +2388,5 @@ index 0000000000000000000000000000000000000000..3e5bdb37dbabd215f52499f1a0ea024a
 +database = "Nintendo - Game Boy Advance|Nintendo - Game Boy Color|Nintendo - Game Boy"
 +license = "MPLv2"
 +permissions = ""
-+display_version = "0.11-dev-multi.0.3.1"
++display_version = "0.11-dev-multi.0.3.2"
 +supports_no_game = "false"
