@@ -9,8 +9,8 @@ Apple application.
   `69a4f0ea1e8aaf442ae4858f2e7f2b31a1776576` and is licensed under
   GPL-3.0-or-later. Its complete license text remains in the fetched source as
   `COPYING`.
-- mGBA is fetched from <https://github.com/mgba-emu/mgba> at commit
-  `3a5bc24629867576b0fb576a5d5a21d3b3d6b576` and is licensed under MPL-2.0.
+- mGBA is fetched from <https://github.com/libretro/mgba> at commit
+  `7a12d6d4b9acb14c0ae62c9166b6a2f3d08007f6` and is licensed under MPL-2.0.
   Its complete license text remains in the fetched source as `LICENSE`.
 - `patches/mgba-multi.patch`, including the new multi-instance core source,
   is distributed under MPL-2.0.

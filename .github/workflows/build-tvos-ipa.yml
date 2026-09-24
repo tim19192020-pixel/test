@@ -16,13 +16,18 @@ permissions:
 
 jobs:
   build:
-    name: RetroArchTV plus mGBA Multi
+    name: Barebones mGBA Multi
     runs-on: macos-15
     timeout-minutes: 90
 
     steps:
       - name: Check out build kit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+
+      - name: Verify pinned build kit
+        run: |
+          shasum -a 256 -c MANIFEST.sha256
+          bash -n scripts/build-unsigned-ipa.sh scripts/validate-ipa.sh
 
       - name: Show Apple toolchain
         run: |
@@ -32,9 +37,11 @@ jobs:
 
       - name: Build and validate unsigned IPA
         run: ./scripts/build-unsigned-ipa.sh
+        env:
+          APP_BUILD_NUMBER: ${{ github.run_number }}
 
       - name: Upload unsigned IPA
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: RetroArchTV-mGBA-Multi-unsigned
           path: |
@@ -43,3 +50,4 @@ jobs:
             dist/BUILD-MANIFEST.txt
           if-no-files-found: error
           retention-days: 14
+          compression-level: 0

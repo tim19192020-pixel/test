@@ -8,8 +8,8 @@ fail() {
 
 show_help() {
   cat <<'EOF'
-Build RetroArchTV with mGBA Multi and a stock mGBA control core, then package
-an unsigned IPA.
+Build RetroArchTV with the barebones mGBA Multi core, then package an unsigned
+IPA.
 
 Usage:
   ./scripts/build-unsigned-ipa.sh [--prepare-only]
@@ -24,7 +24,8 @@ Environment overrides:
   RETROARCH_SOURCE_DIR    Existing pinned RetroArch checkout.
   MGBA_SOURCE_DIR         Existing pinned or fully patched mGBA checkout.
   BUNDLE_ID               Unsigned app bundle identifier.
-  APP_BUILD_NUMBER        Numeric CFBundleVersion; default is 401.
+  APP_BUILD_NUMBER        Numeric CFBundleVersion; default is 1.
+  APP_DISPLAY_NAME        Apple TV home-screen name; default is mGBA Multi.
   TVOS_DEPLOYMENT_TARGET  Minimum tvOS version; default is 13.0.
 EOF
 }
@@ -55,11 +56,14 @@ build_root="${BUILD_ROOT:-$kit_root/.work}"
 dist_dir="${DIST_DIR:-$kit_root/dist}"
 bundle_id="${BUNDLE_ID:-$BUNDLE_ID_DEFAULT}"
 app_build_number="${APP_BUILD_NUMBER:-$APP_BUILD_NUMBER_DEFAULT}"
+app_display_name="${APP_DISPLAY_NAME:-$APP_DISPLAY_NAME_DEFAULT}"
 tvos_target="${TVOS_DEPLOYMENT_TARGET:-$TVOS_DEPLOYMENT_TARGET_DEFAULT}"
 
 case "$app_build_number" in
   ''|*[!0-9]*) fail "APP_BUILD_NUMBER must contain decimal digits only" ;;
 esac
+[ -n "$bundle_id" ] || fail "BUNDLE_ID must not be empty"
+[ -n "$app_display_name" ] || fail "APP_DISPLAY_NAME must not be empty"
 
 mkdir -p "$build_root" "$dist_dir"
 build_root="$(cd "$build_root" && pwd)"
@@ -91,7 +95,8 @@ prepare_repo() {
   local alternate_commit="${4:-}"
   local current_commit
 
-  if [ ! -d "$destination/.git" ]; then
+  # A linked Git worktree records .git as a file rather than a directory.
+  if [ ! -e "$destination/.git" ]; then
     if [ -e "$destination" ]; then
       fail "source destination exists but is not a Git checkout: $destination"
     fi
@@ -132,8 +137,13 @@ apply_patch_once "$mgba_dir" "$kit_root/patches/mgba-multi.patch"
 grep -q 'mGBA Multi' \
   "$mgba_dir/src/platform/libretro/mgba_multi_libretro.info" ||
   fail "custom core metadata was not patched into mGBA"
+grep -q 'display_version = "0.11-dev-multi.0.1.0"' \
+  "$mgba_dir/src/platform/libretro/mgba_multi_libretro.info" ||
+  fail "custom core metadata is not version 0.1.0"
 grep -q 'CMAKE_SYSTEM_NAME STREQUAL "tvOS"' "$mgba_dir/CMakeLists.txt" ||
   fail "tvOS CMake support was not patched into mGBA"
+grep -q 'BUILD_LIBRETRO_MULTI' "$mgba_dir/CMakeLists.txt" ||
+  fail "barebones multi-instance build target is missing from mGBA"
 
 asset_zip="$retroarch_dir/pkg/apple/assets.zip"
 [ -f "$asset_zip" ] || fail "RetroArch Apple assets archive is missing"
@@ -155,7 +165,9 @@ cp "$mgba_dir/src/platform/libretro/mgba_multi_libretro.info" \
   cd "$info_tmp"
   zip -q "$asset_zip" info/mgba_multi_libretro.info
 )
-unzip -l "$asset_zip" | grep -q 'info/mgba_multi_libretro.info' ||
+asset_entries="$(unzip -Z1 "$asset_zip")" ||
+  fail "could not list the RetroArch Apple assets archive"
+grep -Fx 'info/mgba_multi_libretro.info' <<<"$asset_entries" >/dev/null ||
   fail "custom core metadata was not inserted into assets.zip"
 
 rm -rf -- "$info_tmp"
@@ -188,6 +200,22 @@ reset_derived_dir() {
   mkdir -p "$target"
 }
 
+host_test_dir="$build_root/host-tests"
+reset_derived_dir "$host_test_dir"
+xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror \
+  -I "$mgba_dir/src/platform/libretro" \
+  "$mgba_dir/tests/libretro_multi_support_test.c" \
+  "$mgba_dir/src/platform/libretro/libretro_multi_support.c" \
+  -o "$host_test_dir/libretro_multi_support_test"
+"$host_test_dir/libretro_multi_support_test"
+xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror \
+  -I "$mgba_dir/src/platform/libretro" \
+  "$mgba_dir/tests/libretro_audio_test.c" \
+  "$mgba_dir/src/platform/libretro/libretro-audio.c" \
+  "$mgba_dir/src/platform/libretro/libretro_multi_support.c" \
+  -o "$host_test_dir/libretro_audio_test"
+"$host_test_dir/libretro_audio_test"
+
 core_build="$build_root/mgba-tvos-build"
 derived_data="$build_root/RetroArchTV-DerivedData"
 staging_dir="$build_root/ipa-staging"
@@ -204,7 +232,9 @@ cmake -S "$mgba_dir" -B "$core_build" -G Xcode \
   -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
   -DBUILD_LTO=ON \
   -DBUILD_LIBRETRO_MULTI=ON \
-  -DBUILD_LIBRETRO=ON \
+  -DBUILD_LIBRETRO=OFF \
+  -DM_CORE_GBA=ON \
+  -DM_CORE_GB=OFF \
   -DBUILD_QT=OFF \
   -DBUILD_SDL=OFF \
   -DBUILD_GL=OFF \
@@ -225,24 +255,16 @@ cmake -S "$mgba_dir" -B "$core_build" -G Xcode \
   -DUSE_EDITLINE=OFF
 
 cmake --build "$core_build" --config Release \
-  --target mgba_multi_libretro mgba_libretro --parallel
+  --target mgba_multi_libretro --parallel
 
 multi_core_dylibs=()
 while IFS= read -r core_candidate; do
   multi_core_dylibs+=("$core_candidate")
 done < <(find "$core_build" -type f -name mgba_multi_libretro.dylib -print)
 
-stock_core_dylibs=()
-while IFS= read -r core_candidate; do
-  stock_core_dylibs+=("$core_candidate")
-done < <(find "$core_build" -type f -name mgba_libretro.dylib -print)
-
 [ "${#multi_core_dylibs[@]}" -eq 1 ] ||
   fail "expected exactly one mGBA Multi tvOS dylib"
-[ "${#stock_core_dylibs[@]}" -eq 1 ] ||
-  fail "expected exactly one stock mGBA tvOS dylib"
 multi_core_dylib="${multi_core_dylibs[0]}"
-stock_core_dylib="${stock_core_dylibs[0]}"
 
 validate_core_dylib() {
   local core_dylib="$1"
@@ -263,15 +285,29 @@ validate_core_dylib() {
 }
 
 validate_core_dylib "$multi_core_dylib" "mGBA Multi core"
-validate_core_dylib "$stock_core_dylib" "stock mGBA core"
 
-if xcrun nm "$multi_core_dylib" | grep -E \
-  '_pthread_create|_mCoreThread(Start|Launch|Prepare)|_GBASIOLockstep|_GBSIOLockstep' >/dev/null; then
-  fail "mGBA Multi unexpectedly contains thread or link-cable symbols"
+core_symbols="$(xcrun nm -g "$multi_core_dylib")" ||
+  fail "could not inspect the mGBA Multi symbols"
+core_all_symbols="$(xcrun nm "$multi_core_dylib")" ||
+  fail "could not inspect all mGBA Multi symbols"
+grep -q '_pthread_create' <<<"$core_symbols" ||
+  fail "mGBA Multi does not contain the required persistent-worker implementation"
+if grep -E '_mCoreThread|_GBASIOLockstep|_GBSIOLockstep' \
+  <<<"$core_all_symbols" >/dev/null; then
+  fail "mGBA Multi unexpectedly contains mCoreThread or link-cable symbols"
 fi
-if strings "$multi_core_dylib" | grep -E \
-  'mgba_multi_link|mgba_link_[23]|Local link cable|threaded link' >/dev/null; then
-  fail "mGBA Multi unexpectedly contains link-cable options or messages"
+for retro_symbol in \
+  retro_init retro_deinit retro_get_system_info retro_set_environment \
+  retro_load_game retro_unload_game retro_run; do
+  grep -Eq "[[:space:]]_?${retro_symbol}$" <<<"$core_symbols" ||
+    fail "mGBA Multi does not export ${retro_symbol}"
+done
+core_strings="$(strings "$multi_core_dylib")" ||
+  fail "could not inspect the mGBA Multi strings"
+if grep -Ei \
+  'mgba_multi_link|mgba_link_[23]|Local link cable|threaded link|mgba_multi_speed|speed target|Toggle individual speed|mgba_multi_audio|mgba_multi_[23]|Load Subsystem|mGBA Multi \(2 ROMs\)|mGBA Multi \(3 ROMs\)' \
+  <<<"$core_strings" >/dev/null; then
+  fail "mGBA Multi unexpectedly contains removed link, speed, or subsystem features"
 fi
 
 module_dir="$retroarch_dir/pkg/apple/tvOS/modules"
@@ -280,7 +316,11 @@ multi_module_dylib="$module_dir/mgba_multi_libretro_tvos.dylib"
 stock_module_dylib="$module_dir/mgba_libretro_tvos.dylib"
 rm -f -- "$multi_module_dylib" "$stock_module_dylib"
 cp "$multi_core_dylib" "$multi_module_dylib"
-cp "$stock_core_dylib" "$stock_module_dylib"
+xcrun install_name_tool -id \
+  '@rpath/mgba.multi.libretro.framework/mgba.multi.libretro' \
+  "$multi_module_dylib"
+[ ! -e "$stock_module_dylib" ] ||
+  fail "stale stock mGBA module was not removed"
 
 (
   cd "$retroarch_dir/pkg/apple"
@@ -317,6 +357,11 @@ shopt -u nullglob
   fail "expected exactly one RetroArchTV app product"
 app_path="${apps[0]}"
 
+# Keep RetroArch's executable name while giving this clean rebuild its own
+# unambiguous Apple TV home-screen identity.
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $app_display_name" \
+  "$app_path/Info.plist" || fail "could not set the app display name"
+
 actual_build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
   "$app_path/Info.plist")" || fail "could not read the app build number"
 [ "$actual_build_number" = "$app_build_number" ] ||
@@ -336,21 +381,24 @@ fi
 rmdir "$app_path/PlugIns" 2>/dev/null || true
 [ ! -e "$top_shelf_extension" ] || fail "Top Shelf extension was not removed"
 
-multi_core_framework="$app_path/Frameworks/mgba.multi.libretro.framework/mgba.multi.libretro"
-stock_core_framework="$app_path/Frameworks/mgba.libretro.framework/mgba.libretro"
-[ -f "$multi_core_framework" ] ||
+multi_core_framework="$app_path/Frameworks/mgba.multi.libretro.framework"
+multi_core_binary="$multi_core_framework/mgba.multi.libretro"
+stock_core_framework="$app_path/Frameworks/mgba.libretro.framework"
+[ -f "$multi_core_binary" ] ||
   fail "mGBA Multi framework is missing from the app bundle"
-[ -f "$stock_core_framework" ] ||
-  fail "stock mGBA framework is missing from the app bundle"
+[ ! -e "$stock_core_framework" ] ||
+  fail "stock mGBA framework must not be present in the barebones app bundle"
 [ -f "$app_path/assets.zip" ] ||
   fail "assets.zip is missing from the app bundle"
-unzip -l "$app_path/assets.zip" | grep -q 'info/mgba_multi_libretro.info' ||
+app_asset_entries="$(unzip -Z1 "$app_path/assets.zip")" ||
+  fail "could not list assets.zip from the app bundle"
+grep -Fx 'info/mgba_multi_libretro.info' <<<"$app_asset_entries" >/dev/null ||
   fail "mGBA Multi metadata is missing from the app bundle"
-unzip -p "$app_path/assets.zip" info/mgba_multi_libretro.info |
-  grep "display_version = \"0.11-dev-multi.$CUSTOM_CORE_VERSION\"" >/dev/null ||
+app_core_info="$(unzip -p "$app_path/assets.zip" info/mgba_multi_libretro.info)" ||
+  fail "could not read mGBA Multi metadata from the app bundle"
+grep -F "display_version = \"0.11-dev-multi.$CUSTOM_CORE_VERSION\"" \
+  <<<"$app_core_info" >/dev/null ||
   fail "mGBA Multi $CUSTOM_CORE_VERSION metadata is missing from the app bundle"
-unzip -l "$app_path/assets.zip" | grep -q 'info/mgba_libretro.info' ||
-  fail "stock mGBA metadata is missing from the app bundle"
 
 mkdir -p "$staging_dir/Payload"
 COPYFILE_DISABLE=1 ditto --norsrc "$app_path" "$staging_dir/Payload/RetroArchTV.app"
@@ -369,11 +417,24 @@ rm -f -- "$ipa_path" "$dist_dir/SHA256SUMS.txt" "$dist_dir/BUILD-MANIFEST.txt"
   printf 'retroarch_version=%s\n' "$RETROARCH_VERSION"
   printf 'retroarch_commit=%s\n' "$RETROARCH_COMMIT"
   printf 'mgba_base_commit=%s\n' "$MGBA_BASE_COMMIT"
+  printf 'mgba_patched_commit=%s\n' "$MGBA_PATCHED_COMMIT"
   printf 'mgba_patch_sha256=%s\n' \
     "$(shasum -a 256 "$kit_root/patches/mgba-multi.patch" | awk '{print $1}')"
   printf 'custom_core_version=%s\n' "$CUSTOM_CORE_VERSION"
   printf 'app_build_number=%s\n' "$app_build_number"
-  printf 'stock_control_core=true\n'
+  printf 'app_display_name=%s\n' "$app_display_name"
+  printf 'instances_max=3\n'
+  printf 'persistent_worker_lanes=true\n'
+  printf 'main_thread_instance=true\n'
+  printf 'bounded_frame_dispatch=true\n'
+  printf 'fixed_audio_fifo=true\n'
+  printf 'host_support_tests=true\n'
+  printf 'aggregate_save_ram=true\n'
+  printf 'link_cable=false\n'
+  printf 'per_instance_speed=false\n'
+  printf 'subsystems=false\n'
+  printf 'savestates=false\n'
+  printf 'stock_control_core=false\n'
   printf 'link_time_optimization=true\n'
   printf 'top_shelf_extension=false\n'
   printf 'sideload_compatibility=true\n'
@@ -389,6 +450,9 @@ rm -f -- "$ipa_path" "$dist_dir/SHA256SUMS.txt" "$dist_dir/BUILD-MANIFEST.txt"
 )
 
 APP_BUILD_NUMBER="$app_build_number" \
+APP_DISPLAY_NAME="$app_display_name" \
+BUNDLE_ID="$bundle_id" \
+TVOS_DEPLOYMENT_TARGET="$tvos_target" \
   "$kit_root/scripts/validate-ipa.sh" "$ipa_path"
 
 printf '\nBuild complete:\n%s\n' "$ipa_path"

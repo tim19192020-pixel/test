@@ -1,168 +1,143 @@
-# RetroArchTV + mGBA Multi build kit
+# Barebones mGBA Multi for Apple TV
 
-This kit builds an unsigned, device-only Apple TV IPA containing RetroArch
-1.22.2, the custom mGBA Multi libretro core, and the standard mGBA libretro
-core as a single-instance performance control. mGBA Multi renders one, two,
-or three emulators in a stable widescreen layout, supports independent
-per-player speed targets with controller toggles, and keeps independent save
-files. Version 0.4.1 removes link-cable emulation and all worker-thread paths.
+This reproducible build kit creates an unsigned, device-only Apple TV IPA with
+RetroArch 1.22.2 and one custom core: **mGBA Multi 0.1.0**. The clean first
+version deliberately limits its scope to running one GBA ROM in one, two, or
+three independent instances.
 
-The source is fully pinned. No games, BIOS files, certificates, provisioning
-profiles, or precompiled app are included.
+The source revisions are pinned. The kit contains no games, BIOS files,
+certificates, provisioning profiles, or precompiled application.
 
-## Fastest route: GitHub Actions
+## Version 0.1.0 contract
 
-1. Put this entire folder in a GitHub repository.
-2. Open the repository's Actions tab.
-3. Select **Build unsigned Apple TV IPA**.
-4. Choose **Run workflow**.
-5. Download the **RetroArchTV-mGBA-Multi-unsigned** artifact when it finishes.
+- One to three GBA instances; controller ports 1 through 3 map permanently to
+  players 1 through 3.
+- Stable, aspect-correct native layouts: one screen at 240x160, two side by
+  side at 480x160, or two above one centered screen at 480x320.
+- Player 1 runs on RetroArch's libretro caller thread. Players 2 and 3 use
+  bounded, persistent pthread workers when **Execution** is set to
+  **Parallel**. No frame queue or run-ahead is permitted; one `retro_run` call
+  advances each active instance by exactly one frame before output is emitted.
+- **Sequential** execution remains available as an A/B diagnostic and as the
+  automatic fallback if a worker cannot start.
+- Audio from every active instance is drained after each frame into fixed-size
+  queues, normalized to 65536 Hz with a rational frame accumulator, mixed once,
+  and submitted through one libretro callback.
+- One aggregate RetroArch save-RAM region contains three fixed player slices,
+  so player number, screen placement, controller port, and save data cannot
+  exchange identities across restarts.
+- No link cable, per-instance speed control, subsystems, save states, rewind
+  implementation, background autosave thread, or stock mGBA control core.
+
+## GitHub Actions build
+
+1. Put this folder at the root of a GitHub repository.
+2. Open **Actions > Build unsigned Apple TV IPA**.
+3. Choose **Run workflow**.
+4. Download **RetroArchTV-mGBA-Multi-unsigned**.
 
 The artifact contains the IPA, its SHA-256 checksum, and a build manifest. The
-workflow uses a GitHub-hosted macOS runner because Apple TV binaries require
-Xcode and the tvOS SDK.
+workflow uses a GitHub-hosted macOS runner because the device build needs Xcode
+and the tvOS SDK. Its GitHub run number becomes `CFBundleVersion`, allowing a
+new build to update an earlier installation.
 
-## Build on a Mac
+## Local Mac build
 
-Requirements:
-
-- macOS with Xcode selected by `xcode-select`
-- the Apple TV device SDK
-- CMake, Git, Zip, and Unzip
-- internet access to fetch the two pinned source repositories
-
-Run:
+Requirements are macOS, Xcode with the Apple TV device SDK, CMake, Git, Zip,
+and Unzip. Run:
 
 ~~~sh
 chmod +x scripts/*.sh
 ./scripts/build-unsigned-ipa.sh
 ~~~
 
-The result is written to:
+The output is:
 
 ~~~text
-dist/RetroArchTV-mGBA-Multi-1.22.2-core-0.4.1-unsigned.ipa
+dist/RetroArchTV-mGBA-Multi-1.22.2-core-0.1.0-unsigned.ipa
 ~~~
 
-The script first validates the source revisions and patches, builds the custom
-and stock cores for arm64 tvOS, embeds both as frameworks in RetroArchTV, adds
-the custom core metadata to `assets.zip`, packages the app as an IPA, and
-validates the archive and Mach-O platform markers.
-
-To fetch and patch the sources without invoking Xcode:
+To fetch, verify, patch, and stage the pinned sources without invoking Xcode:
 
 ~~~sh
 ./scripts/build-unsigned-ipa.sh --prepare-only
 ~~~
 
-## Signing and installation
+The build enables only `mgba_multi_libretro`: `BUILD_LIBRETRO_MULTI=ON`, stock
+`BUILD_LIBRETRO=OFF`, GBA enabled, and GB/GBC disabled. It removes stale stock
+mGBA modules before the RetroArch Xcode build and verifies that no stock mGBA
+framework enters the app. Before cross-compiling, it runs the native layout,
+bounded-FIFO, exact audio-cadence, rate-transition, and RTC-container tests.
 
-The output has no Apple distribution signature or provisioning profile.
-Before installation, sign the IPA with your own Apple developer identity/team
-using your normal tvOS sideloading workflow. The nested core framework is
-ad-hoc signed during packaging so a signing tool can replace all signatures
-consistently. The sideload package omits RetroArch's optional Top Shelf
-extension, which avoids requiring a second provisioning identity. It uses app
-build number 401 while retaining the same bundle identifier, so existing save
-data remains associated with the same app container.
+## Install and use
 
-The default bundle identifier is `com.mgbamulti.RetroArchTV`. Override it
-when building if your signing setup requires a different App ID:
+The IPA has no distribution signature or provisioning profile. Sign it with
+your Apple developer identity and a tvOS provisioning profile, then install it
+with your normal sideloading tool. Nested frameworks are signed ad hoc so the
+signer can replace those signatures consistently. The optional Top Shelf
+extension is removed to avoid a second App ID and provisioning profile.
+
+The default identity is:
+
+| Property | Value |
+| --- | --- |
+| Home-screen name | `mGBA Multi` |
+| Bundle identifier | `com.mgbamulti.RetroArchTVBarebones` |
+| Local build number | `1` |
+| Minimum system | tvOS 13.0 |
+
+Override the bundle identifier when necessary:
 
 ~~~sh
-BUNDLE_ID=com.yourname.RetroArchTV ./scripts/build-unsigned-ipa.sh
+BUNDLE_ID=com.yourname.mgbamulti ./scripts/build-unsigned-ipa.sh
 ~~~
 
-The minimum deployment target defaults to tvOS 13.0:
+After installation, load a legally obtained `.gba` file with **Nintendo - Game
+Boy Advance (mGBA Multi)**. In **Quick Menu > Core Options**, choose one, two,
+or three instances and choose Parallel or Sequential execution. Close and
+reload content after changing either option. Assign controllers to RetroArch
+ports 1, 2, and 3.
 
-~~~sh
-TVOS_DEPLOYMENT_TARGET=15.0 ./scripts/build-unsigned-ipa.sh
-~~~
+The selected ROM is cloned into each active instance. Version 0.1.0 does not
+load different ROMs into different screens. Do not use RetroArch save states
+with this core; battery-backed in-game saves use the aggregate `.srm` region.
 
-## Using mGBA Multi
+## Package validation
 
-1. Sign and install the IPA on Apple TV.
-2. Import legally obtained GB, GBC, or GBA content into RetroArch.
-3. Select the **Nintendo - Game Boy Advance / Color (mGBA Multi)** core.
-4. Open **Quick Menu > Core Options**.
-5. Set **Instances** to 1, 2, or 3.
-6. Set the independent **Player 1/2/3 speed target** options from 1x through
-   3x in 0.25x steps.
-7. Use **Close Content**, then load it again after changing the instance count.
-   RetroArch's **Restart** command only resets the existing instances. Speed
-   changes apply immediately.
-8. Assign controllers to RetroArch input ports 1 through 3.
+The build fails unless the IPA has the expected bundle ID, display name, build
+number, `APPL` package type, AppleTVOS platform, Apple TV device family, tvOS
+minimum version, executable permissions, arm64 device binaries, and exact core
+framework install name. It also checks all nested framework and dylib
+signatures, required libretro exports, and the required `pthread_create`
+reference.
 
-Press **R2** on a player's controller to toggle only that player between 1x
-and its configured speed target. R2 is edge-triggered, so holding it will not
-repeatedly toggle. Every content session starts at 1x, even when a faster target
-is configured; the first R2 press activates that target. Changing a target does
-not activate it.
+The validator rejects a stock mGBA framework, mGBA's `mCoreThread`, link-cable
+symbols, removed link/speed/subsystem strings, PlugIns and app extensions,
+provisioning profiles, an app-level Xcode signature, ROMs, AppleDouble files,
+and unexpected IPA top-level entries.
 
-Normal **Load Content** duplicates one selected ROM across the configured
-instances. To run different games or versions, use **Load Subsystem** and pick
-either **mGBA Multi (2 ROMs)** or **mGBA Multi (3 ROMs)**.
-
-## Save layout
-
-| Player | Three-player placement | Save file |
-| --- | --- | --- |
-| 1 | Top-left | RetroArch's normal `<content>.srm` |
-| 2 | Top-right | `<ROM stem>.p2.srm` |
-| 3 | Bottom-center | `<ROM stem>.p3.srm` |
-
-Player 2 and 3 battery saves are flushed periodically and when content closes.
-A RetroArch save state stores all active instances together and must be loaded
-with the same instance count.
-
-The placement is deterministic: the controller port, screen position, and save
-slot always share the same player number after content is restarted. The
-native-resolution screens are padded toward 16:9 and uniformly scaled, so no
-individual screen is stretched or cropped.
-
-## Performance behavior
-
-- The custom core is compiled with mGBA's `DISABLE_THREADING` configuration,
-  matching the standard libretro core. Every instance runs directly on the
-  RetroArch core thread; there are no emulation workers, condition-variable
-  waits, or link coordinators.
-- GBA audio uses the stock mGBA libretro core's moving-average frame pacing.
-  Per-instance audio queues have fixed limits and are trimmed to a bounded
-  carry window, so queued work cannot grow over time.
-- Extra speed frames remain interleaved across players. Video padding is only
-  cleared when the layout changes, and 1x audio uses a no-resampling fast path.
-- Both cores are optimized Release builds with link-time optimization enabled.
-  The IPA validator rejects the custom core if thread or link-cable symbols
-  reappear and verifies the nested framework signatures.
-
-## Pinned source
+## Pinned sources
 
 | Component | Revision |
 | --- | --- |
 | RetroArch | 1.22.2 / `69a4f0ea1e8aaf442ae4858f2e7f2b31a1776576` |
-| mGBA base | `3a5bc24629867576b0fb576a5d5a21d3b3d6b576` |
-| mGBA Multi patch | core version 0.4.1 |
-| tvOS architecture | arm64 device |
+| libretro/mGBA base | `7a12d6d4b9acb14c0ae62c9166b6a2f3d08007f6` |
+| mGBA Multi | core version 0.1.0 |
+| Device architecture | arm64 tvOS |
 
-See [LICENSES.md](LICENSES.md) for licensing and source obligations.
+See [LICENSES.md](LICENSES.md) for source and redistribution obligations.
 
 ## Troubleshooting
 
-- **Apple TV SDK missing:** open Xcode once, install the tvOS platform when
-  prompted, then make sure `xcode-select -p` points to that Xcode.
-- **Patch is neither applicable nor already applied:** remove only the
-  kit's `.work/sources` directory and run again. Do not substitute newer
-  source revisions without reviewing the patches.
-- **Signing or installation fails:** the produced IPA is intentionally
-  unsigned. Use a tvOS-capable signer and a provisioning profile matching the
-  final bundle identifier.
-- **Only one game is shown multiple times:** that is the normal Load Content
-  behavior. Use Load Subsystem to select separate ROMs.
-- **R2 does not change speed:** choose a target above 1x in Core Options and
-  confirm that the controller is assigned to the intended RetroArch port.
-- **Gameplay is still slow:** first disable RetroArch run-ahead, preemptive
-  frames, and rewind. Then load the same game with **Nintendo - Game Boy
-  Advance / Color (mGBA)**. If the standard core is also slow, the bottleneck
-  is outside the multi-instance wrapper. If standard mGBA and one-instance
-  mGBA Multi are full speed but three instances are not, the remaining limit is
-  the Apple TV's aggregate CPU budget.
+- If the Apple TV SDK is missing, open Xcode once, install the tvOS platform,
+  and verify `xcode-select -p` points to that Xcode.
+- If a patch is neither applicable nor already applied, remove only the kit's
+  `.work/sources` directory and rerun the build. Do not silently substitute a
+  newer source revision.
+- If installation succeeds but no app appears, confirm the signer used a tvOS
+  profile matching the final bundle identifier. The packaged app intentionally
+  contains no Top Shelf extension or embedded profile.
+- For performance comparison, test one instance in both Parallel and
+  Sequential modes with RetroArch run-ahead, preemptive frames, and rewind
+  disabled. The core never sleeps, waits for display refresh, or accumulates a
+  frame backlog internally.
