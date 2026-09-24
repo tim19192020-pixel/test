@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 9d528e790ed3aabcfba77c0c3dedd9b80b6410fa..e5ac64bda800b795a0f2c4caae7030bb8fd43f29 100644
+index 9d528e790ed3aabcfba77c0c3dedd9b80b6410fa..0193fe4cab0b04e3149fb74bb129befe0072ef98 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -69,6 +69,7 @@ if(NOT LIBMGBA_ONLY)
@@ -47,7 +47,7 @@ index 9d528e790ed3aabcfba77c0c3dedd9b80b6410fa..e5ac64bda800b795a0f2c4caae7030bb
  		set(CMAKE_OSX_DEPLOYMENT_TARGET "10.6")
  	endif()
  	# Not supported until Xcode 9
-@@ -1025,8 +1036,29 @@ if(BUILD_PYTHON)
+@@ -1025,11 +1036,39 @@ if(BUILD_PYTHON)
  	add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/src/platform/python ${CMAKE_CURRENT_BINARY_DIR}/python)
  endif()
  
@@ -79,7 +79,17 @@ index 9d528e790ed3aabcfba77c0c3dedd9b80b6410fa..e5ac64bda800b795a0f2c4caae7030bb
  	set(LIBRETRO_CORE_SRC ${CORE_SRC})
  	list(APPEND LIBRETRO_CORE_SRC ${VFS_SRC})
  	list(FILTER LIBRETRO_CORE_SRC EXCLUDE REGEX "/core/(scripting|library|mem-search|rewind|input)\\.c$")
-@@ -1086,33 +1118,37 @@ if(BUILD_LIBRETRO)
++	if(BUILD_LIBRETRO_MULTI)
++		# This core owns its bounded worker lanes directly. Keep mGBA's GUI
++		# thread controller and serial lockstep implementation out of the
++		# binary entirely rather than merely leaving them unused.
++		list(FILTER LIBRETRO_CORE_SRC EXCLUDE REGEX "/core/(lockstep|thread)\\.c$")
++		list(FILTER LIBRETRO_CORE_SRC EXCLUDE REGEX "/gba/sio/lockstep\\.c$")
++	endif()
+ 	list(FILTER LIBRETRO_CORE_SRC EXCLUDE REGEX "/util/(audio-resampler|interpolator)\\.c$")
+ 	if(CMAKE_TRY_COMPILE_TARGET_TYPE STREQUAL "STATIC_LIBRARY" AND NOT APPLE)
+ 		# Link-based function probes always succeed under static try-compile,
+@@ -1086,33 +1125,37 @@ if(BUILD_LIBRETRO)
  		list(APPEND LIBRETRO_EXTRA_DEFINES HAVE_NO_LANGEXTRA)
  	endif()
  	if(LIBRETRO_STATIC)
@@ -130,7 +140,7 @@ index 9d528e790ed3aabcfba77c0c3dedd9b80b6410fa..e5ac64bda800b795a0f2c4caae7030bb
  	endif()
  endif()
  
-@@ -1467,6 +1503,7 @@ if(NOT QUIET AND NOT LIBMGBA_ONLY)
+@@ -1467,6 +1510,7 @@ if(NOT QUIET AND NOT LIBMGBA_ONLY)
  	message(STATUS "	Video test suite: ${BUILD_CINEMA}")
  	message(STATUS "Cores:")
  	message(STATUS "	Libretro core: ${BUILD_LIBRETRO}")
