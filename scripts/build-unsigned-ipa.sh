@@ -144,6 +144,12 @@ grep -q 'CMAKE_SYSTEM_NAME STREQUAL "tvOS"' "$mgba_dir/CMakeLists.txt" ||
   fail "tvOS CMake support was not patched into mGBA"
 grep -q 'BUILD_LIBRETRO_MULTI' "$mgba_dir/CMakeLists.txt" ||
   fail "barebones multi-instance build target is missing from mGBA"
+grep -F '#define SAVE_SLOT_SIZE (GBA_SIZE_FLASH1M + sizeof(struct GBASavedataRTCBuffer))' \
+  "$mgba_dir/src/platform/libretro/libretro_multi.c" >/dev/null ||
+  fail "mGBA Multi save-slice format changed unexpectedly"
+grep -F 'static uint8_t saveData[MULTI_MAX_INSTANCES][SAVE_SLOT_SIZE];' \
+  "$mgba_dir/src/platform/libretro/libretro_multi.c" >/dev/null ||
+  fail "mGBA Multi fixed P1/P2/P3 save container is missing"
 
 asset_zip="$retroarch_dir/pkg/apple/assets.zip"
 [ -f "$asset_zip" ] || fail "RetroArch Apple assets archive is missing"
@@ -321,12 +327,14 @@ if grep -E '(^|[^[:alnum:]_])mgba_multi_speed([^[:alnum:]_]|$)' \
   fail "mGBA Multi unexpectedly contains the removed shared speed control"
 fi
 for required_core_string in \
+  mgba_multi_screen_order \
   mgba_multi_audio \
   mgba_multi_speed_p1 \
   mgba_multi_speed_p2 \
   mgba_multi_speed_p3 \
   mgba_multi_dialogue_speed \
   mgba_multi_dialogue_auto_advance \
+  'Screen order (reading order); P1-P2-P3|P1-P3-P2|P2-P1-P3|P2-P3-P1|P3-P1-P2|P3-P2-P1' \
   'Audio output; Player 1|Player 2|Player 3|Disabled' \
   'FireRed dialogue speed (L2 toggle)' \
   'FireRed dialogue auto-advance; Enabled|Disabled' \
@@ -450,12 +458,20 @@ rm -f -- "$ipa_path" "$dist_dir/SHA256SUMS.txt" "$dist_dir/BUILD-MANIFEST.txt"
   printf 'app_build_number=%s\n' "$app_build_number"
   printf 'app_display_name=%s\n' "$app_display_name"
   printf 'instances_max=3\n'
+  printf 'screen_order_configurable=true\n'
+  printf 'screen_order_default=P1-P2-P3\n'
+  printf 'screen_order_values=P1-P2-P3,P1-P3-P2,P2-P1-P3,P2-P3-P1,P3-P1-P2,P3-P2-P1\n'
+  printf 'screen_order_presentation_only=true\n'
+  printf 'screen_order_save_identity_stable=true\n'
   printf 'persistent_worker_lanes=true\n'
   printf 'main_thread_instance=true\n'
   printf 'bounded_frame_dispatch=true\n'
   printf 'fixed_audio_fifo=true\n'
   printf 'host_support_tests=true\n'
   printf 'aggregate_save_ram=true\n'
+  printf 'save_slice_bytes=131088\n'
+  printf 'aggregate_save_bytes=393264\n'
+  printf 'save_slice_order=P1,P2,P3\n'
   printf 'link_cable=false\n'
   printf 'per_instance_speed=true\n'
   printf 'speed_toggle=R2\n'
@@ -474,7 +490,9 @@ rm -f -- "$ipa_path" "$dist_dir/SHA256SUMS.txt" "$dist_dir/BUILD-MANIFEST.txt"
   printf 'dialogue_auto_advance_configurable=true\n'
   printf 'dialogue_supported_rom_sha1=41cb23d8dccc8ebd7c649cd8fbb58eeace6e2fdc,dd5945db9b930750cb39d00c84da8571feebf417\n'
   printf 'dialogue_unknown_rom_fail_closed=true\n'
-  printf 'dialogue_post_message_path_fail_closed=true\n'
+  printf 'dialogue_print_acceleration_requires_safe_closure=false\n'
+  printf 'dialogue_terminal_auto_advance_requires_safe_closure=true\n'
+  printf 'dialogue_held_advance_does_not_throttle=true\n'
   printf 'dialogue_battles_blocked=true\n'
   printf 'dialogue_choices_blocked=true\n'
   printf 'dialogue_detector_tests=true\n'

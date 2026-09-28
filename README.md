@@ -1,19 +1,21 @@
 # Barebones mGBA Multi for Apple TV
 
 This reproducible build kit creates an unsigned, device-only Apple TV IPA with
-RetroArch 1.22.2 and one custom core: **mGBA Multi 0.3.0**. It builds on the
+RetroArch 1.22.2 and one custom core: **mGBA Multi 0.3.1**. It builds on the
 stable linkless core while keeping its scope to one GBA ROM in one, two, or
 three independent instances.
 
 The source revisions are pinned. The kit contains no games, BIOS files,
 certificates, provisioning profiles, or precompiled application.
 
-## Version 0.3.0 contract
+## Version 0.3.1 contract
 
 - One to three GBA instances; controller ports 1 through 3 map permanently to
   players 1 through 3.
 - Stable, aspect-correct native layouts: one screen at 240x160, two side by
-  side at 480x160, or two above one centered screen at 480x320.
+  side at 480x160, or two above one centered screen at 480x320. **Screen order
+  (reading order)** offers all six P1/P2/P3 permutations as a live, persisted
+  core option. Reordering changes presentation only.
 - Player 1 runs on RetroArch's libretro caller thread. Players 2 and 3 use
   bounded, persistent pthread workers when **Execution** is set to
   **Parallel**. No frame queue or run-ahead is permitted. At normal speed, one
@@ -36,18 +38,20 @@ certificates, provisioning profiles, or precompiled application.
 - L2 independently toggles a conservative FireRed dialogue assist for that
   player. Its dialogue speed is selectable from 5x through 20x in whole-number
   increments (default 10x), and automatic advancement can be disabled. An
-  injected A press lasts exactly one emulated frame and is followed by a forced
-  released frame at normal speed.
+  injected A press lasts exactly one emulated frame and is followed by exactly
+  one forced released frame at normal speed. A held physical A/B remains masked
+  until released but no longer suspends dialogue acceleration.
 - Dialogue assist is enabled only for exact, clean English (USA) Pokemon
   FireRed revisions 1.0 and 1.1. It blocks trainer battles, wild encounters,
   battle startup, trainer- and scripted-encounter lead-ins, yes/no prompts,
-  multichoice prompts, and every state it cannot positively identify. It only
-  arms when the nested post-message script path is proven to contain close,
-  release, return, and termination operations. Unsupported ROMs fail closed
-  without live-state inspection or injected input.
+  multichoice prompts, and every state it cannot positively identify. Exact
+  non-choice standard-message waits followed by proven benign story operations
+  can accelerate; a final synthetic A still requires a fully safe cosmetic
+  terminal path. Unsupported ROMs fail closed without live-state inspection or
+  injected input.
 - One aggregate RetroArch save-RAM region contains three fixed player slices,
-  so player number, screen placement, controller port, and save data cannot
-  exchange identities across restarts.
+  so player number, controller port, audio/speed/dialogue state, and save data
+  cannot exchange identities when screens are rearranged or the app restarts.
 - No link cable, subsystems, save states, rewind implementation, background
   autosave thread, or stock mGBA control core.
 
@@ -76,7 +80,7 @@ chmod +x scripts/*.sh
 The output is:
 
 ~~~text
-dist/RetroArchTV-mGBA-Multi-1.22.2-core-0.3.0-unsigned.ipa
+dist/RetroArchTV-mGBA-Multi-1.22.2-core-0.3.1-unsigned.ipa
 ~~~
 
 To fetch, verify, patch, and stage the pinned sources without invoking Xcode:
@@ -88,10 +92,10 @@ To fetch, verify, patch, and stage the pinned sources without invoking Xcode:
 The build enables only `mgba_multi_libretro`: `BUILD_LIBRETRO_MULTI=ON`, stock
 `BUILD_LIBRETRO=OFF`, GBA enabled, and GB/GBC disabled. It removes stale stock
 mGBA modules before the RetroArch Xcode build and verifies that no stock mGBA
-framework enters the app. Before cross-compiling, it runs the native layout,
-independent speed-scheduler, audio-selection, bounded-FIFO, exact
-audio-cadence, rate-transition, RTC-container, and fail-closed FireRed dialogue
-detector tests.
+framework enters the app. Before cross-compiling, it runs exhaustive screen
+order/compositing, independent speed-scheduler, held-input release,
+audio-selection, bounded-FIFO, exact audio-cadence, rate-transition,
+RTC-container, and fail-closed FireRed dialogue detector tests.
 
 ## Install and use
 
@@ -100,6 +104,9 @@ your Apple developer identity and a tvOS provisioning profile, then install it
 with your normal sideloading tool. Nested frameworks are signed ad hoc so the
 signer can replace those signatures consistently. The optional Top Shelf
 extension is removed to avoid a second App ID and provisioning profile.
+To retain the existing three-player save container, install this build over the
+previous app with the same Apple team and bundle identifier; do not uninstall
+the old app first.
 
 The default identity is:
 
@@ -119,8 +126,12 @@ BUNDLE_ID=com.yourname.mgbamulti ./scripts/build-unsigned-ipa.sh
 After installation, load a legally obtained `.gba` file with **Nintendo - Game
 Boy Advance (mGBA Multi)**. In **Quick Menu > Core Options**, choose one, two,
 or three instances and choose Parallel or Sequential execution. Close and
-reload content after changing either option. **Audio output** and the three
-player speed targets can be changed while content is running. Assign
+reload content after changing either option. **Screen order (reading order)**
+can be changed live and is persisted by RetroArch: with three players its slots
+are top-left, top-right, then bottom-center; with two players inactive P3 is
+removed and the remaining relative order becomes left/right; with one player
+P1 remains full-screen. **Audio output** and the three player speed targets can
+also be changed while content is running. Assign
 controllers to RetroArch ports 1, 2, and 3; press that controller's R2 button
 once to enable its target speed and again to return only that player to 1.0x.
 Holding R2 does not repeatedly toggle.
@@ -139,14 +150,16 @@ are:
 
 Every other revision, translation, ROM hack, and patched image reports the
 feature unavailable when L2 is pressed. During recognized dialogue, the core
-first proves that every nested return after the message only closes/releases
-the message and terminates the script. It rechecks all guards before every
-accelerated frame and returns immediately to normal scheduling if a battle,
-encounter, choice, side-effecting continuation, or unknown state appears. The
-configured multiplier is a target and may be limited by available Apple TV
-processing time.
+requires an exact non-choice standard-message wait and classifies the bounded
+continuation before accelerating. Proven story operations such as variables,
+flags, audio, movement, or a following message no longer prevent the visible
+text from speeding up, but final automatic A remains limited to a fully safe
+cosmetic terminal. Live guards are rechecked before every accelerated frame,
+and choice, trainer-battle, scripted-encounter, native/special, malformed, and
+unknown paths remain at 1x with no injected input. The configured multiplier is
+a target and may be limited by available Apple TV processing time.
 
-The selected ROM is cloned into each active instance. Version 0.3.0 does not
+The selected ROM is cloned into each active instance. Version 0.3.1 does not
 load different ROMs into different screens. Do not use RetroArch save states
 with this core; battery-backed in-game saves use the aggregate `.srm` region.
 
@@ -159,9 +172,9 @@ framework install name. It also checks all nested framework and dylib
 signatures, required libretro exports, and the required `pthread_create`
 reference.
 
-The validator requires the audio selector, all three speed-target options, the
-R2 speed descriptor, both FireRed dialogue options, and the L2 dialogue
-descriptor. It rejects a stock mGBA framework, mGBA's
+The validator requires the six-value screen-order option, audio selector, all
+three speed-target options, the R2 speed descriptor, both FireRed dialogue
+options, and the L2 dialogue descriptor. It rejects a stock mGBA framework, mGBA's
 `mCoreThread`, link-cable symbols, removed link/subsystem strings, PlugIns and
 app extensions, provisioning profiles, an app-level Xcode signature, ROMs,
 AppleDouble files, and unexpected IPA top-level entries.
@@ -172,7 +185,7 @@ AppleDouble files, and unexpected IPA top-level entries.
 | --- | --- |
 | RetroArch | 1.22.2 / `69a4f0ea1e8aaf442ae4858f2e7f2b31a1776576` |
 | libretro/mGBA base | `7a12d6d4b9acb14c0ae62c9166b6a2f3d08007f6` |
-| mGBA Multi | core version 0.3.0 |
+| mGBA Multi | core version 0.3.1 |
 | Device architecture | arm64 tvOS |
 
 See [LICENSES.md](LICENSES.md) for source and redistribution obligations.

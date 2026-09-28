@@ -151,11 +151,11 @@ index 9d528e7..c227628 100644
  	message(STATUS "	Shared: ${BUILD_SHARED}")
 diff --git a/README_MULTI_LIBRETRO.md b/README_MULTI_LIBRETRO.md
 new file mode 100644
-index 0000000..e7079ed
+index 0000000..10c14ae
 --- /dev/null
 +++ b/README_MULTI_LIBRETRO.md
-@@ -0,0 +1,167 @@
-+# mGBA Multi 0.3.0
+@@ -0,0 +1,178 @@
++# mGBA Multi 0.3.1
 +
 +This is a deliberately small, linkless libretro frontend built directly on
 +upstream mGBA. It runs one selected GBA ROM in one, two, or three independent
@@ -164,16 +164,20 @@ index 0000000..e7079ed
 +## Baseline contract
 +
 +- Controller ports 1, 2, and 3 always control Players 1, 2, and 3.
-+- Screen position, controller port, execution lane, and save slice use the same
-+  permanent player index.
++- Controller port, execution lane, audio/speed/dialogue state, and save slice
++  use the same permanent player index. Screen position is presentation-only.
 +- One instance is `240x160`; two are `480x160` side by side; three are
-+  `480x320`, with P1/P2 above and P3 centered below. RetroArch scales this
-+  native RGB565 composite without changing any screen's 3:2 aspect ratio.
++  `480x320`, with two screens above and one centered below. `Screen order
++  (reading order)` offers all six P1/P2/P3 permutations and can be changed
++  live. With two instances, inactive P3 is filtered out while the relative
++  P1/P2 order is retained. One instance is always P1. RetroArch persists this
++  core option and scales the native RGB565 composite without changing any
++  screen's 3:2 aspect ratio.
 +- The ordinary RetroArch `.srm` is a fixed three-slice container. Every slice
 +  has 128 KiB plus a canonical 16-byte RTC trailer, so changing the visible
 +  count never renames or shifts a player's save. The frontend mirrors mGBA's
 +  save-type-specific RTC location (8, 64, or 128 KiB) into that fixed trailer.
-+- Version 0.3.0 intentionally has no link cable, subsystems, savestates,
++- Version 0.3.1 intentionally has no link cable, subsystems, savestates,
 +  user-configurable frameskip, sensors, or background file writes.
 +- `Audio output` selects Player 1 (the default), Player 2, or Player 3, or
 +  disables audible output. Selecting a player that is not active produces
@@ -188,9 +192,11 @@ index 0000000..e7079ed
 +L2 on each player's controller independently toggles a conservative dialogue
 +assist for that instance. `FireRed dialogue speed` selects an integer target
 +from 5x through 20x (default 10x). `FireRed dialogue auto-advance` controls
-+whether verified page and final waits receive a one-emulated-frame A press;
-+every injected press is followed by a forced released frame before acceleration
-+can resume. With auto-advance disabled, only verified text printing is sped up.
++whether verified page and final waits receive a one-emulated-frame A press.
++Every advance is followed by exactly one forced released frame. A physical A/B
++that remains held is masked until both buttons are released, while verified
++printing resumes at the selected speed instead of being throttled to 1x. With
++auto-advance disabled, only verified text printing is sped up.
 +
 +The detector supports only exact, clean English (USA) Pokemon FireRed ROMs:
 +
@@ -202,15 +208,18 @@ index 0000000..e7079ed
 +the detector does not inspect live game state, and no input is injected.
 +
 +For supported ROMs, acceleration requires the known overworld callback,
-+ordinary field-message printer, and expected script wait to agree. The detector
-+also proves that the complete nested return path after the text contains only
-+message close/release operations and script termination. It therefore leaves
-+story text with side effects or uncertain continuations at 1x. The detector
-+blocks on battle startup, in-battle state (including trainer battles and wild
-+Pokemon encounters), trainer- and scripted-encounter lead-ins, yes/no prompts,
-+multichoice prompts, and every unknown state. It rechecks the state between
-+every accelerated emulated frame and returns immediately to normal scheduling
-+when any safety condition stops matching.
++ordinary field-message printer, and one of that revision's exact four
++non-choice standard-message waits to agree. A bounded ROM-tail classifier lets
++verified story dialogue followed by known variable, flag, audio, movement, or
++another message operation accelerate; this removes the old all-or-nothing
++closure test that made only the last line of many conversations run quickly.
++The final automatic A remains available only for a fully cosmetic terminal
++path. The detector blocks on battle startup, in-battle state (including trainer
++battles and wild Pokemon encounters), trainer- and scripted-encounter lead-ins,
++yes/no prompts, multichoice prompts, branches/calls it cannot prove safe, and
++every unknown state. It rechecks all live guards between accelerated emulated
++frames and returns immediately to normal scheduling when any guard stops
++matching.
 +
 +## Execution model
 +
@@ -288,7 +297,9 @@ index 0000000..e7079ed
 +cmake --build build-multi --target mgba_multi_libretro --parallel
 +```
 +
-+The small host-side support and audio tests can be run with:
++The small host-side tests cover every screen permutation, compositing identity,
++held-input release behavior, speed/audio/save helpers, and both FireRed detector
++profiles. They can be run with:
 +
 +```sh
 +cc -std=c11 -Wall -Wextra -Werror \
@@ -445,10 +456,10 @@ index 02d2a22..1c10e40 100644
  #endif
 diff --git a/src/platform/libretro/libretro_firered_dialogue.c b/src/platform/libretro/libretro_firered_dialogue.c
 new file mode 100644
-index 0000000..4e5e24e
+index 0000000..0bce0c3
 --- /dev/null
 +++ b/src/platform/libretro/libretro_firered_dialogue.c
-@@ -0,0 +1,466 @@
+@@ -0,0 +1,885 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -474,7 +485,7 @@ index 0000000..4e5e24e
 +#define FIRERED_CONTEXT_NATIVE_PTR_OFFSET 4U
 +#define FIRERED_CONTEXT_SCRIPT_PTR_OFFSET 8U
 +#define FIRERED_CONTEXT_STACK_OFFSET 12U
-+#define FIRERED_CONTEXT_STACK_COUNT 20U
++#define FIRERED_CONTEXT_STACK_COUNT FIRERED_DIALOGUE_STACK_COUNT
 +#define FIRERED_MAIN 0x030030F0U
 +#define FIRERED_MAIN_CALLBACK2_OFFSET 4U
 +#define FIRERED_MAIN_IN_BATTLE_OFFSET 0x439U
@@ -490,12 +501,55 @@ index 0000000..4e5e24e
 +#define FIRERED_SCRIPT_MODE_NATIVE 2U
 +#define FIRERED_MESSAGE_BOX_HIDDEN 0U
 +#define FIRERED_MESSAGE_BOX_NORMAL 2U
++#define FIRERED_CMD_CALL 0x04U
++#define FIRERED_CMD_GOTO 0x05U
++#define FIRERED_CMD_GOTO_IF 0x06U
++#define FIRERED_CMD_CALL_IF 0x07U
++#define FIRERED_CMD_GOTO_STD 0x08U
 +#define FIRERED_CMD_END 0x02U
 +#define FIRERED_CMD_RETURN 0x03U
++#define FIRERED_CMD_CALL_STD 0x09U
++#define FIRERED_CMD_GOTO_STD_IF 0x0AU
++#define FIRERED_CMD_CALL_STD_IF 0x0BU
++#define FIRERED_CMD_END_RAM 0x0DU
++#define FIRERED_CMD_LOAD_WORD 0x0FU
++#define FIRERED_CMD_SETVAR 0x16U
++#define FIRERED_CMD_ADDVAR 0x17U
++#define FIRERED_CMD_SUBVAR 0x18U
++#define FIRERED_CMD_COPYVAR 0x19U
++#define FIRERED_CMD_SET_OR_COPY_VAR 0x1AU
++#define FIRERED_CMD_DELAY 0x28U
++#define FIRERED_CMD_SETFLAG 0x29U
++#define FIRERED_CMD_CLEARFLAG 0x2AU
++#define FIRERED_CMD_PLAY_SE 0x2FU
++#define FIRERED_CMD_WAIT_SE 0x30U
++#define FIRERED_CMD_PLAY_FANFARE 0x31U
++#define FIRERED_CMD_WAIT_FANFARE 0x32U
++#define FIRERED_CMD_APPLY_MOVEMENT 0x4FU
++#define FIRERED_CMD_WAIT_MOVEMENT 0x51U
++#define FIRERED_CMD_MESSAGE 0x67U
 +#define FIRERED_CMD_CLOSE_MESSAGE 0x68U
++#define FIRERED_CMD_LOCK_ALL 0x69U
++#define FIRERED_CMD_LOCK 0x6AU
 +#define FIRERED_CMD_RELEASE_ALL 0x6BU
 +#define FIRERED_CMD_RELEASE 0x6CU
 +#define FIRERED_CMD_WAIT_BUTTON_PRESS 0x6DU
++#define FIRERED_CMD_MESSAGE_AUTO_SCROLL 0x9BU
++
++#define FIRERED_SCRIPT_COMMAND_COUNT 0xD5U
++#define FIRERED_TAIL_PROOF_MAX_STATES 512U
++
++#define FIRERED_STD_MSGBOX_NPC 2U
++#define FIRERED_STD_MSGBOX_SIGN 3U
++#define FIRERED_STD_MSGBOX_DEFAULT 4U
++#define FIRERED_STD_MSGBOX_AUTO_CLOSE 6U
++#define FIRERED_SAFE_MSGBOX_COUNT 4U
++
++enum FireRedTailSafety {
++	FIRERED_TAIL_FORBIDDEN,
++	FIRERED_TAIL_SAFE_TERMINAL,
++	FIRERED_TAIL_BENIGN_NO_TERMINAL,
++};
 +
 +enum FireRedTerminalStage {
 +	FIRERED_TERMINAL_NONE,
@@ -512,6 +566,8 @@ index 0000000..4e5e24e
 +	uint32_t waitForAorBPress;
 +	uint32_t taskBattleStart;
 +	uint32_t choiceTasks[3];
++	uint32_t safeMsgboxWaits[FIRERED_SAFE_MSGBOX_COUNT];
++	uint32_t stdScriptsTable;
 +	uint32_t trainerScriptStart;
 +	uint32_t trainerScriptEnd;
 +};
@@ -534,6 +590,10 @@ index 0000000..4e5e24e
 +		.waitForAorBPress = 0x0806B898U,
 +		.taskBattleStart = 0x0807F620U,
 +		.choiceTasks = { 0x0809CC98U, 0x0809CE54U, 0x0809CFDCU },
++		.safeMsgboxWaits = {
++			0x081A4E47U, 0x081A4E51U, 0x081A4E5AU, 0x081A5025U,
++		},
++		.stdScriptsTable = 0x08160450U,
 +		.trainerScriptStart = 0x081A4EB4U,
 +		.trainerScriptEnd = 0x081A501FU,
 +	},
@@ -544,6 +604,10 @@ index 0000000..4e5e24e
 +		.waitForAorBPress = 0x0806B8ACU,
 +		.taskBattleStart = 0x0807F634U,
 +		.choiceTasks = { 0x0809CCACU, 0x0809CE68U, 0x0809CFF0U },
++		.safeMsgboxWaits = {
++			0x081A4EBFU, 0x081A4EC9U, 0x081A4ED2U, 0x081A509DU,
++		},
++		.stdScriptsTable = 0x081604C8U,
 +		.trainerScriptStart = 0x081A4F2CU,
 +		.trainerScriptEnd = 0x081A5097U,
 +	},
@@ -609,6 +673,12 @@ index 0000000..4e5e24e
 +			FIRERED_ROM_BASE, address, value);
 +}
 +
++static bool _readRom32(const struct FireRedDialogueDetector* detector,
++		uint32_t address, uint32_t* value) {
++	return _readU32(detector->rom, detector->romSize,
++			FIRERED_ROM_BASE, address, value);
++}
++
 +static uint32_t _codeAddress(uint32_t pointer) {
 +	return pointer & ~1U;
 +}
@@ -627,58 +697,349 @@ index 0000000..4e5e24e
 +			scriptPointer < profile->trainerScriptEnd;
 +}
 +
-+/* Prove that advancing this message cannot immediately run gameplay script.
-+ * A normal msgbox can be nested through callstd/call, so follow only returns
-+ * already present on the interpreter stack. The only accepted operations are
-+ * cosmetic close/release commands and a terminating end/return. Any flag,
-+ * branch, special, choice, trainerbattle, malformed pointer, or unknown opcode
-+ * fails closed. This deliberately leaves some ordinary scripted messages at
-+ * 1x rather than accelerating a trainer/legendary encounter lead-in. */
-+static bool _hasSafeClosure(const struct FireRedDialogueDetector* detector,
-+		uint32_t scriptPointer, uint8_t stackDepth) {
-+	/* ScriptPush rejects depth 20, so accepting it would trust corrupt state. */
-+	if (stackDepth >= FIRERED_CONTEXT_STACK_COUNT || scriptPointer == UINT32_MAX) {
-+		return false;
-+	}
-+
-+	uint32_t cursor = scriptPointer + 1U;
-+	for (unsigned step = 0; step < FIRERED_CONTEXT_STACK_COUNT * 2U + 4U;
-+			++step) {
-+		uint8_t opcode;
-+		if (!_readRom8(detector, cursor, &opcode)) {
-+			return false;
-+		}
-+		switch (opcode) {
-+		case FIRERED_CMD_END:
++static bool _isSafeMsgboxWait(const struct FireRedDialogueProfileData* profile,
++		uint32_t scriptPointer) {
++	for (unsigned i = 0; i < FIRERED_SAFE_MSGBOX_COUNT; ++i) {
++		if (scriptPointer == profile->safeMsgboxWaits[i]) {
 +			return true;
-+		case FIRERED_CMD_RETURN:
-+			if (!stackDepth) {
-+				return true;
-+			}
-+			--stackDepth;
-+			if (!_readIwram32(detector,
-+					FIRERED_GLOBAL_CONTEXT + FIRERED_CONTEXT_STACK_OFFSET +
-+					stackDepth * sizeof(uint32_t), &cursor)) {
-+				return false;
-+			}
-+			break;
-+		case FIRERED_CMD_CLOSE_MESSAGE:
-+		case FIRERED_CMD_RELEASE_ALL:
-+		case FIRERED_CMD_RELEASE:
-+			if (cursor == UINT32_MAX) {
-+				return false;
-+			}
-+			++cursor;
-+			break;
-+		default:
-+			return false;
 +		}
 +	}
 +	return false;
 +}
 +
++static bool _safeStackContext(const struct FireRedDialogueDetector* detector,
++		const struct FireRedDialogueProfileData* profile,
++		uint32_t scriptPointer, uint8_t stackDepth,
++		uint32_t stack[FIRERED_CONTEXT_STACK_COUNT]) {
++	/* Depth 19 is ambiguous: FireRed's ScriptPush refuses another call but its
++	 * caller still jumps, which would make the eventual return consume a stale
++	 * stack entry. Stock scripts never approach this limit, so fail closed. */
++	if (!stack || stackDepth + 1U >= FIRERED_CONTEXT_STACK_COUNT ||
++			_isTrainerScript(profile, scriptPointer)) {
++		return false;
++	}
++	for (uint8_t i = 0; i < stackDepth; ++i) {
++		if (!_readIwram32(detector,
++				FIRERED_GLOBAL_CONTEXT + FIRERED_CONTEXT_STACK_OFFSET +
++				i * sizeof(uint32_t), &stack[i]) ||
++				_isTrainerScript(profile, stack[i])) {
++			return false;
++		}
++	}
++	return true;
++}
++
++static bool _stackEquals(const uint32_t left[FIRERED_CONTEXT_STACK_COUNT],
++		const uint32_t right[FIRERED_CONTEXT_STACK_COUNT], uint8_t stackDepth) {
++	return !memcmp(left, right, stackDepth * sizeof(*left));
++}
++
++/* Runtime byte widths from pokefirered's FRLG command handlers. A few legacy
++ * or dummied handlers do not consume the operands emitted by their assembler
++ * macros, so their runtime width is one. Trainerbattle (0x5C) is the sole
++ * variable-width command and is intentionally zero/forbidden. Control, native,
++ * menu, choice, and battle opcodes are handled before this table. */
++static const uint8_t sFireRedCommandWidths[FIRERED_SCRIPT_COMMAND_COUNT] = {
++	/* 00 */  1,  1,  1,  1,  5,  5,  6,  6,  2,  2,  3,  3,  1,  1,  2,  6,
++	/* 10 */  3,  6,  6,  6,  3,  9,  5,  5,  5,  5,  5,  3,  3,  6,  6,  6,
++	/* 20 */  9,  5,  5,  5,  5,  3,  5,  1,  3,  3,  3,  3,  1,  1,  1,  3,
++	/* 30 */  1,  3,  1,  4,  3,  1,  3,  2,  2,  8,  8,  8,  3,  8,  8,  8,
++	/* 40 */  8,  8,  5,  1,  5,  5,  5,  5,  3,  5,  5,  3,  3,  3,  3,  7,
++	/* 50 */  9,  3,  5,  3,  5,  3,  5,  7,  5,  5,  1,  4,  0,  1,  1,  1,
++	/* 60 */  3,  3,  3,  7,  3,  4,  1,  5,  1,  1,  1,  1,  1,  1,  3,  5,
++	/* 70 */  6,  6,  1,  5,  1,  5,  1,  2,  5, 15,  3,  5,  3,  4,  2,  4,
++	/* 80 */  4,  4,  4,  4,  4,  6,  5,  5,  5,  3,  1,  1,  1,  1,  1,  3,
++	/* 90 */  6,  6,  6,  4,  1,  4,  1,  2,  3,  3,  2,  5,  3,  4,  3,  3,
++	/* A0 */  1,  5,  9,  1,  3,  1,  2,  3,  6,  5,  9,  3,  5,  5,  1,  5,
++	/* B0 */  5,  1,  1,  3,  3,  3,  6,  1,  5,  5,  5,  6,  6,  5,  5,  6,
++	/* C0 */  3,  3,  3,  2,  8,  1,  4,  2,  5,  1,  1,  1,  6,  3,  3,  1,
++	/* D0 */  3,  8,  4,  5,  6,
++};
++
++struct FireRedTailState {
++	uint32_t cursor;
++	uint32_t stack[FIRERED_CONTEXT_STACK_COUNT];
++	uint8_t stackDepth;
++};
++
++enum FireRedTailProofMark {
++	FIRERED_PROOF_VISITING = 1,
++	FIRERED_PROOF_SAFE,
++	FIRERED_PROOF_UNSAFE,
++};
++
++struct FireRedTailProofNode {
++	struct FireRedTailState state;
++	uint8_t mark;
++};
++
++struct FireRedTailProof {
++	const struct FireRedDialogueDetector* detector;
++	const struct FireRedDialogueProfileData* profile;
++	struct FireRedTailProofNode nodes[FIRERED_TAIL_PROOF_MAX_STATES];
++	unsigned nodeCount;
++};
++
++static bool _tailStateEquals(const struct FireRedTailState* left,
++		const struct FireRedTailState* right) {
++	return left->cursor == right->cursor &&
++			left->stackDepth == right->stackDepth &&
++			!memcmp(left->stack, right->stack,
++					left->stackDepth * sizeof(*left->stack));
++}
++
++static bool _advanceTailState(struct FireRedTailState* state, unsigned width) {
++	if (!width || state->cursor > UINT32_MAX - width) {
++		return false;
++	}
++	state->cursor += width;
++	return true;
++}
++
++static bool _isMessageStd(uint8_t standardScript) {
++	return standardScript == FIRERED_STD_MSGBOX_NPC ||
++			standardScript == FIRERED_STD_MSGBOX_SIGN ||
++			standardScript == FIRERED_STD_MSGBOX_DEFAULT ||
++			standardScript == FIRERED_STD_MSGBOX_AUTO_CLOSE;
++}
++
++static bool _isForbiddenTailOpcode(uint8_t opcode) {
++	if (opcode >= 0x23U && opcode <= 0x27U) { /* native/special/waitstate */
++		return true;
++	}
++	if (opcode >= 0x5CU && opcode <= 0x5FU) { /* trainer battle/control */
++		return true;
++	}
++	if (opcode >= 0x6EU && opcode <= 0x71U) { /* choices */
++		return true;
++	}
++	if ((opcode >= 0x86U && opcode <= 0x89U) ||
++			(opcode >= 0x8BU && opcode <= 0x8EU) ||
++			(opcode >= 0xB1U && opcode <= 0xB2U)) { /* menus/link modes */
++		return true;
++	}
++	if ((opcode >= 0xB6U && opcode <= 0xBFU) || opcode == 0xCFU ||
++			opcode == 0x0CU) { /* wild battle/dynamic or RAM scripts */
++		return true;
++	}
++	return false;
++}
++
++static bool _proveTailState(struct FireRedTailProof* proof,
++		const struct FireRedTailState* input) {
++	for (unsigned i = 0; i < proof->nodeCount; ++i) {
++		struct FireRedTailProofNode* existing = &proof->nodes[i];
++		if (!_tailStateEquals(&existing->state, input)) {
++			continue;
++		}
++		/* A back-edge is an unproved infinite path and therefore fails closed. */
++		return existing->mark == FIRERED_PROOF_SAFE;
++	}
++	if (proof->nodeCount >= FIRERED_TAIL_PROOF_MAX_STATES) {
++		return false;
++	}
++
++	struct FireRedTailProofNode* node = &proof->nodes[proof->nodeCount++];
++	node->state = *input;
++	node->mark = FIRERED_PROOF_VISITING;
++	struct FireRedTailState next = *input;
++	uint8_t opcode;
++	bool safe = false;
++	if (_isTrainerScript(proof->profile, input->cursor) ||
++			!_readRom8(proof->detector, input->cursor, &opcode)) {
++		goto done;
++	}
++
++	if (opcode == FIRERED_CMD_END || opcode == FIRERED_CMD_END_RAM) {
++		safe = true;
++		goto done;
++	}
++	if (opcode == FIRERED_CMD_RETURN) {
++		if (!next.stackDepth) {
++			safe = true;
++			goto done;
++		}
++		next.cursor = next.stack[--next.stackDepth];
++		safe = _proveTailState(proof, &next);
++		goto done;
++	}
++	/* These start a new, separately-guarded text/wait boundary. */
++	if (opcode == FIRERED_CMD_MESSAGE || opcode == 0x78U ||
++			opcode == FIRERED_CMD_WAIT_BUTTON_PRESS ||
++			opcode == FIRERED_CMD_MESSAGE_AUTO_SCROLL) {
++		unsigned width = sFireRedCommandWidths[opcode];
++		uint8_t unused;
++		safe = width && input->cursor <= UINT32_MAX - (width - 1U) &&
++				_readRom8(proof->detector, input->cursor + width - 1U, &unused);
++		goto done;
++	}
++	if (_isForbiddenTailOpcode(opcode)) {
++		goto done;
++	}
++
++	if (opcode >= FIRERED_CMD_CALL && opcode <= FIRERED_CMD_CALL_IF) {
++		bool conditional = opcode == FIRERED_CMD_GOTO_IF ||
++				opcode == FIRERED_CMD_CALL_IF;
++		bool call = opcode == FIRERED_CMD_CALL || opcode == FIRERED_CMD_CALL_IF;
++		unsigned width = conditional ? 6U : 5U;
++		uint32_t target;
++		if (!_readRom32(proof->detector,
++				input->cursor + (conditional ? 2U : 1U), &target)) {
++			goto done;
++		}
++		if (conditional) {
++			struct FireRedTailState fallthrough = *input;
++			if (!_advanceTailState(&fallthrough, width) ||
++					!_proveTailState(proof, &fallthrough)) {
++				goto done;
++			}
++		}
++		next.cursor = target;
++		if (call) {
++			if ((unsigned) next.stackDepth + 1U >=
++					FIRERED_CONTEXT_STACK_COUNT ||
++					input->cursor > UINT32_MAX - width) {
++				goto done;
++			}
++			next.stack[next.stackDepth++] = input->cursor + width;
++		}
++		safe = _proveTailState(proof, &next);
++		goto done;
++	}
++
++	if (opcode >= FIRERED_CMD_GOTO_STD && opcode <= FIRERED_CMD_CALL_STD_IF) {
++		bool conditional = opcode == FIRERED_CMD_GOTO_STD_IF ||
++				opcode == FIRERED_CMD_CALL_STD_IF;
++		bool call = opcode == FIRERED_CMD_CALL_STD ||
++				opcode == FIRERED_CMD_CALL_STD_IF;
++		unsigned width = conditional ? 3U : 2U;
++		uint8_t standardScript;
++		if (!_readRom8(proof->detector,
++				input->cursor + (conditional ? 2U : 1U), &standardScript) ||
++				standardScript >= 10U || standardScript == 5U) {
++			goto done;
++		}
++		if (conditional) {
++			struct FireRedTailState fallthrough = *input;
++			if (!_advanceTailState(&fallthrough, width) ||
++					!_proveTailState(proof, &fallthrough)) {
++				goto done;
++			}
++		}
++		if (_isMessageStd(standardScript)) {
++			safe = true;
++			goto done;
++		}
++		if (!_readRom32(proof->detector,
++				proof->profile->stdScriptsTable +
++				standardScript * sizeof(uint32_t), &next.cursor)) {
++			goto done;
++		}
++		if (call) {
++			if ((unsigned) next.stackDepth + 1U >=
++					FIRERED_CONTEXT_STACK_COUNT ||
++					input->cursor > UINT32_MAX - width) {
++				goto done;
++			}
++			next.stack[next.stackDepth++] = input->cursor + width;
++		}
++		safe = _proveTailState(proof, &next);
++		goto done;
++	}
++
++	if (opcode >= FIRERED_SCRIPT_COMMAND_COUNT ||
++			!sFireRedCommandWidths[opcode] ||
++			!_advanceTailState(&next, sFireRedCommandWidths[opcode])) {
++		goto done;
++	}
++	safe = _proveTailState(proof, &next);
++
++done:
++	node->mark = safe ? FIRERED_PROOF_SAFE : FIRERED_PROOF_UNSAFE;
++	return safe;
++}
++
++/* Preserve the original, deliberately tiny proof for terminal auto-A. The CFG
++ * below only expands speed-up eligibility and can never auto-execute its tail. */
++static bool _hasPureClosure(const struct FireRedDialogueDetector* detector,
++		const struct FireRedDialogueProfileData* profile,
++		uint32_t scriptPointer, uint8_t stackDepth) {
++	if (stackDepth + 1U >= FIRERED_CONTEXT_STACK_COUNT ||
++			scriptPointer == UINT32_MAX) {
++		return false;
++	}
++	uint32_t cursor = scriptPointer + 1U;
++	for (unsigned step = 0; step < FIRERED_CONTEXT_STACK_COUNT * 2U + 4U;
++			++step) {
++		uint8_t opcode;
++		if (_isTrainerScript(profile, cursor) ||
++				!_readRom8(detector, cursor, &opcode)) {
++			return false;
++		}
++		if (opcode == FIRERED_CMD_END) {
++			return true;
++		}
++		if (opcode == FIRERED_CMD_RETURN) {
++			if (!stackDepth) {
++				return true;
++			}
++			if (!_readIwram32(detector,
++					FIRERED_GLOBAL_CONTEXT + FIRERED_CONTEXT_STACK_OFFSET +
++					--stackDepth * sizeof(uint32_t), &cursor)) {
++				return false;
++			}
++			continue;
++		}
++		if (opcode != FIRERED_CMD_CLOSE_MESSAGE &&
++				opcode != FIRERED_CMD_RELEASE_ALL &&
++				opcode != FIRERED_CMD_RELEASE) {
++			return false;
++		}
++		if (cursor == UINT32_MAX) {
++			return false;
++		}
++		++cursor;
++	}
++	return false;
++}
++
++static enum FireRedTailSafety _classifyTail(
++		const struct FireRedDialogueDetector* detector,
++		const struct FireRedDialogueProfileData* profile,
++		uint32_t scriptPointer, uint8_t stackDepth) {
++	if (_hasPureClosure(detector, profile, scriptPointer, stackDepth)) {
++		return FIRERED_TAIL_SAFE_TERMINAL;
++	}
++	if (stackDepth + 1U >= FIRERED_CONTEXT_STACK_COUNT ||
++			scriptPointer == UINT32_MAX) {
++		return FIRERED_TAIL_FORBIDDEN;
++	}
++
++	struct FireRedTailProof proof;
++	memset(&proof, 0, sizeof(proof));
++	proof.detector = detector;
++	proof.profile = profile;
++	struct FireRedTailState initial;
++	memset(&initial, 0, sizeof(initial));
++	initial.cursor = scriptPointer + 1U;
++	initial.stackDepth = stackDepth;
++	for (uint8_t i = 0; i < stackDepth; ++i) {
++		if (!_readIwram32(detector,
++				FIRERED_GLOBAL_CONTEXT + FIRERED_CONTEXT_STACK_OFFSET +
++				i * sizeof(uint32_t), &initial.stack[i])) {
++			return FIRERED_TAIL_FORBIDDEN;
++		}
++	}
++	return _proveTailState(&proof, &initial) ?
++			FIRERED_TAIL_BENIGN_NO_TERMINAL : FIRERED_TAIL_FORBIDDEN;
++}
++
 +static void _block(struct FireRedDialogueDetector* detector) {
 +	detector->sessionArmed = false;
++	detector->terminalAutoAdvanceSafe = false;
++	detector->armedScriptPointer = 0;
++	memset(detector->armedStack, 0, sizeof(detector->armedStack));
++	detector->armedStackDepth = 0;
 +	detector->terminalStage = FIRERED_TERMINAL_NONE;
 +	detector->lastState = FIRERED_DIALOGUE_BLOCKED;
 +}
@@ -760,6 +1121,14 @@ index 0000000..4e5e24e
 +	 * every classification before the ROM is dereferenced. */
 +	size_t unused;
 +	const struct FireRedDialogueProfileData* profileData = _profile(detector);
++	bool safeWaitsValid = true;
++	for (unsigned i = 0; i < FIRERED_SAFE_MSGBOX_COUNT; ++i) {
++		if (!_addressOffset(profileData->safeMsgboxWaits[i], FIRERED_ROM_BASE,
++				romSize, 1, &unused)) {
++			safeWaitsValid = false;
++			break;
++		}
++	}
 +	if (!_addressOffset(FIRERED_TEXT_PRINTER_0 + FIRERED_TEXT_PRINTER_STATE_OFFSET,
 +			FIRERED_EWRAM_BASE, ewramSize, 1, &unused) ||
 +			!_addressOffset(FIRERED_MESSAGE_BOX_TYPE, FIRERED_EWRAM_BASE,
@@ -773,7 +1142,7 @@ index 0000000..4e5e24e
 +					FIRERED_TASK_ACTIVE_OFFSET,
 +				FIRERED_IWRAM_BASE, iwramSize, 1, &unused) ||
 +			!_addressOffset(profileData->trainerScriptEnd - 1,
-+				FIRERED_ROM_BASE, romSize, 1, &unused)) {
++				FIRERED_ROM_BASE, romSize, 1, &unused) || !safeWaitsValid) {
 +		memset(detector, 0, sizeof(*detector));
 +		return;
 +	}
@@ -782,6 +1151,11 @@ index 0000000..4e5e24e
 +void fireRedDialogueReset(struct FireRedDialogueDetector* detector) {
 +	if (detector) {
 +		_block(detector);
++		detector->cachedTailValid = false;
++		detector->cachedScriptPointer = 0;
++		memset(detector->cachedStack, 0, sizeof(detector->cachedStack));
++		detector->cachedStackDepth = 0;
++		detector->cachedTailSafety = FIRERED_TAIL_FORBIDDEN;
 +	}
 +}
 +
@@ -802,6 +1176,7 @@ index 0000000..4e5e24e
 +	uint32_t callback2;
 +	uint32_t nativePointer;
 +	uint32_t scriptPointer;
++	uint32_t stackSnapshot[FIRERED_CONTEXT_STACK_COUNT] = { 0 };
 +	bool drawTaskActive;
 +	bool forbiddenTaskActive;
 +	if (!_readIwram32(detector, FIRERED_MAIN + FIRERED_MAIN_CALLBACK2_OFFSET,
@@ -833,7 +1208,8 @@ index 0000000..4e5e24e
 +	if (callback2 != profile->callback2Overworld ||
 +			(inBattle & FIRERED_MAIN_IN_BATTLE_MASK) ||
 +			status != FIRERED_CONTEXT_RUNNING || forbiddenTaskActive ||
-+			_isTrainerScript(profile, scriptPointer)) {
++			!_safeStackContext(detector, profile, scriptPointer, stackDepth,
++				stackSnapshot)) {
 +		_block(detector);
 +		return detector->lastState;
 +	}
@@ -845,17 +1221,59 @@ index 0000000..4e5e24e
 +		return detector->lastState;
 +	}
 +	bool scriptAtWaitButton = nextCommand == FIRERED_CMD_WAIT_BUTTON_PRESS;
++	bool scriptAtSafeMsgboxWait = scriptAtWaitButton &&
++			_isSafeMsgboxWait(profile, scriptPointer);
 +	bool hiddenTerminal = messageBoxType == FIRERED_MESSAGE_BOX_HIDDEN &&
 +			!printerActive && !drawTaskActive;
++	if (detector->sessionArmed &&
++			(detector->armedStackDepth != stackDepth ||
++			 !_stackEquals(detector->armedStack, stackSnapshot, stackDepth))) {
++		_block(detector);
++		return detector->lastState;
++	}
 +
-+	/* A session can only be armed by an ordinary field message whose script is
-+	 * waiting for that box and whose next exact opcode is waitbuttonpress. */
++	/* A session can only be armed by one of this exact ROM revision's four
++	 * non-choice standard msgbox waits. Classify the immutable script tail once
++	 * per active message, while retaining all live battle/task checks above for
++	 * every accelerated subframe. */
 +	if (mode == FIRERED_SCRIPT_MODE_NATIVE &&
 +			nativePointer == profile->isFieldMessageBoxHidden &&
-+			scriptAtWaitButton &&
-+			_hasSafeClosure(detector, scriptPointer, stackDepth) &&
++			scriptAtSafeMsgboxWait &&
 +			messageBoxType == FIRERED_MESSAGE_BOX_NORMAL &&
 +			printerActive && drawTaskActive) {
++		bool sameMessage = detector->sessionArmed &&
++				detector->terminalStage == FIRERED_TERMINAL_MESSAGE &&
++				detector->armedScriptPointer == scriptPointer &&
++				detector->armedStackDepth == stackDepth &&
++				_stackEquals(detector->armedStack, stackSnapshot, stackDepth);
++		if (!sameMessage) {
++			enum FireRedTailSafety tailSafety;
++			if (detector->cachedTailValid &&
++					detector->cachedScriptPointer == scriptPointer &&
++					detector->cachedStackDepth == stackDepth &&
++					_stackEquals(detector->cachedStack, stackSnapshot, stackDepth)) {
++				tailSafety = (enum FireRedTailSafety) detector->cachedTailSafety;
++			} else {
++				tailSafety = _classifyTail(detector, profile, scriptPointer,
++						stackDepth);
++				detector->cachedTailValid = true;
++				detector->cachedScriptPointer = scriptPointer;
++				memcpy(detector->cachedStack, stackSnapshot,
++						stackDepth * sizeof(*stackSnapshot));
++				detector->cachedStackDepth = stackDepth;
++				detector->cachedTailSafety = (unsigned) tailSafety;
++			}
++			if (tailSafety == FIRERED_TAIL_FORBIDDEN) {
++				_block(detector);
++				return detector->lastState;
++			}
++			detector->terminalAutoAdvanceSafe =
++					tailSafety == FIRERED_TAIL_SAFE_TERMINAL;
++			detector->armedScriptPointer = scriptPointer;
++			memcpy(detector->armedStack, stackSnapshot,
++					stackDepth * sizeof(*stackSnapshot));
++			detector->armedStackDepth = stackDepth;
++		}
 +		detector->sessionArmed = true;
 +		detector->terminalStage = FIRERED_TERMINAL_MESSAGE;
 +		if (printerState == 0 || printerState == 4 ||
@@ -878,7 +1296,8 @@ index 0000000..4e5e24e
 +
 +	if (mode == FIRERED_SCRIPT_MODE_NATIVE &&
 +			nativePointer == profile->isFieldMessageBoxHidden &&
-+			scriptAtWaitButton &&
++			scriptPointer == detector->armedScriptPointer &&
++			scriptAtSafeMsgboxWait &&
 +			(detector->terminalStage == FIRERED_TERMINAL_MESSAGE ||
 +			 detector->terminalStage == FIRERED_TERMINAL_HIDDEN_NATIVE)) {
 +		detector->terminalStage = FIRERED_TERMINAL_HIDDEN_NATIVE;
@@ -886,7 +1305,9 @@ index 0000000..4e5e24e
 +		return detector->lastState;
 +	}
 +
-+	if (mode == FIRERED_SCRIPT_MODE_BYTECODE && scriptAtWaitButton &&
++	if (mode == FIRERED_SCRIPT_MODE_BYTECODE &&
++			scriptPointer == detector->armedScriptPointer &&
++			scriptAtSafeMsgboxWait &&
 +			(detector->terminalStage == FIRERED_TERMINAL_HIDDEN_NATIVE ||
 +			 detector->terminalStage == FIRERED_TERMINAL_BYTECODE)) {
 +		detector->terminalStage = FIRERED_TERMINAL_BYTECODE;
@@ -896,6 +1317,8 @@ index 0000000..4e5e24e
 +
 +	if (mode == FIRERED_SCRIPT_MODE_NATIVE &&
 +			nativePointer == profile->waitForAorBPress &&
++			detector->armedScriptPointer != UINT32_MAX &&
++			scriptPointer == detector->armedScriptPointer + 1U &&
 +			(detector->terminalStage == FIRERED_TERMINAL_BYTECODE ||
 +			 detector->terminalStage == FIRERED_TERMINAL_WAIT)) {
 +		detector->terminalStage = FIRERED_TERMINAL_WAIT;
@@ -907,8 +1330,15 @@ index 0000000..4e5e24e
 +	return detector->lastState;
 +}
 +
++bool fireRedDialogueCanAutoAdvanceTerminal(
++		const struct FireRedDialogueDetector* detector) {
++	return detector && detector->sessionArmed &&
++			detector->terminalAutoAdvanceSafe;
++}
++
 +void fireRedDialogueConsumeTerminal(struct FireRedDialogueDetector* detector) {
 +	if (!detector || !detector->sessionArmed ||
++			!detector->terminalAutoAdvanceSafe ||
 +			detector->terminalStage != FIRERED_TERMINAL_WAIT ||
 +			detector->lastState != FIRERED_DIALOGUE_TERMINAL_WAIT) {
 +		return;
@@ -917,10 +1347,10 @@ index 0000000..4e5e24e
 +}
 diff --git a/src/platform/libretro/libretro_firered_dialogue.h b/src/platform/libretro/libretro_firered_dialogue.h
 new file mode 100644
-index 0000000..4ee0dd4
+index 0000000..6e2d7ce
 --- /dev/null
 +++ b/src/platform/libretro/libretro_firered_dialogue.h
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,77 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -932,6 +1362,8 @@ index 0000000..4ee0dd4
 +#include <stdbool.h>
 +#include <stddef.h>
 +#include <stdint.h>
++
++#define FIRERED_DIALOGUE_STACK_COUNT 20
 +
 +enum FireRedDialogueState {
 +	FIRERED_DIALOGUE_BLOCKED,
@@ -948,8 +1380,8 @@ index 0000000..4ee0dd4
 +};
 +
 +/* The memory pointers are borrowed and must remain valid until the next init.
-+ * `profile` and `terminalStage` are internal state kept here so callers can
-+ * allocate one independent detector per emulated instance without allocation. */
++ * The remaining fields include internal state so callers can allocate one
++ * independent detector per emulated instance without allocation. */
 +struct FireRedDialogueDetector {
 +	const uint8_t* ewram;
 +	size_t ewramSize;
@@ -958,9 +1390,18 @@ index 0000000..4ee0dd4
 +	const uint8_t* rom;
 +	size_t romSize;
 +	enum FireRedDialogueProfile profile;
++	uint32_t armedScriptPointer;
++	uint32_t cachedScriptPointer;
++	uint32_t armedStack[FIRERED_DIALOGUE_STACK_COUNT];
++	uint32_t cachedStack[FIRERED_DIALOGUE_STACK_COUNT];
 +	unsigned terminalStage;
++	unsigned cachedTailSafety;
 +	enum FireRedDialogueState lastState;
++	uint8_t armedStackDepth;
++	uint8_t cachedStackDepth;
 +	bool sessionArmed;
++	bool terminalAutoAdvanceSafe;
++	bool cachedTailValid;
 +};
 +
 +enum FireRedDialogueProfile fireRedDialogueProfileFromSha1(
@@ -975,6 +1416,12 @@ index 0000000..4ee0dd4
 +enum FireRedDialogueState fireRedDialogueInspect(
 +		struct FireRedDialogueDetector* detector);
 +
++/* True only when the currently armed message has a fully proven cosmetic
++ * closure. A benign scripted continuation may still be accelerated while its
++ * final input is deliberately left to the player. */
++bool fireRedDialogueCanAutoAdvanceTerminal(
++		const struct FireRedDialogueDetector* detector);
++
 +/* Consumes a verified terminal wait, if present, and disarms the session. This
 + * makes an injected button a one-shot and prevents it advancing the script
 + * state that follows the dialogue. */
@@ -983,10 +1430,10 @@ index 0000000..4ee0dd4
 +#endif
 diff --git a/src/platform/libretro/libretro_multi.c b/src/platform/libretro/libretro_multi.c
 new file mode 100644
-index 0000000..93449d3
+index 0000000..0d22dba
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi.c
-@@ -0,0 +1,1340 @@
+@@ -0,0 +1,1348 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -1042,7 +1489,7 @@ index 0000000..93449d3
 +#error "The barebones multi-instance core requires the GBA core"
 +#endif
 +
-+#define MULTI_FRONTEND_VERSION "0.3.0"
++#define MULTI_FRONTEND_VERSION "0.3.1"
 +#define VIDEO_STRIDE 256
 +#define VIDEO_HEIGHT_MAX 224
 +#define VIDEO_BUFFER_PIXELS (VIDEO_STRIDE * VIDEO_HEIGHT_MAX)
@@ -1082,7 +1529,7 @@ index 0000000..93449d3
 +	int16_t rawAudio[AUDIO_RAW_CHUNK_FRAMES * 2];
 +	int16_t convertedAudio[AUDIO_CONVERTED_CHUNK_FRAMES * 2];
 +	struct FireRedDialogueDetector dialogueDetector;
-+	bool dialogueReleasePending;
++	struct MultiDialogueInputGuard dialogueInput;
 +	bool dialogueWasEnabled;
 +};
 +
@@ -1116,6 +1563,7 @@ index 0000000..93449d3
 +static bool fatalLoadError;
 +static bool useBitmasks;
 +static enum MultiAudioMode audioMode = MULTI_AUDIO_PLAYER_1;
++static enum MultiScreenOrder screenOrder = MULTI_SCREEN_ORDER_DEFAULT;
 +static struct MultiSpeedState speedState[MULTI_MAX_INSTANCES];
 +static struct MultiDialogueToggleState dialogueToggleState[MULTI_MAX_INSTANCES];
 +static unsigned dialogueSpeedTenths = MULTI_DIALOGUE_DEFAULT_TENTHS;
@@ -1163,6 +1611,7 @@ index 0000000..93449d3
 +static const struct retro_variable coreVariables[] = {
 +	{ "mgba_multi_instances", "Instances (restart content); 3|2|1" },
 +	{ "mgba_multi_execution", "Execution (restart content); Parallel|Sequential" },
++	{ "mgba_multi_screen_order", "Screen order (reading order); P1-P2-P3|P1-P3-P2|P2-P1-P3|P2-P3-P1|P3-P1-P2|P3-P2-P1" },
 +	{ "mgba_multi_audio", "Audio output; Player 1|Player 2|Player 3|Disabled" },
 +	{ "mgba_multi_speed_p1", "Player 1 speed target (R2 toggle); 2.0x|1.0x|1.1x|1.2x|1.3x|1.4x|1.5x|1.6x|1.7x|1.8x|1.9x|2.1x|2.2x|2.3x|2.4x|2.5x|2.6x|2.7x|2.8x|2.9x|3.0x|3.1x|3.2x|3.3x|3.4x|3.5x|3.6x|3.7x|3.8x|3.9x|4.0x" },
 +	{ "mgba_multi_speed_p2", "Player 2 speed target (R2 toggle); 2.0x|1.0x|1.1x|1.2x|1.3x|1.4x|1.5x|1.6x|1.7x|1.8x|1.9x|2.1x|2.2x|2.3x|2.4x|2.5x|2.6x|2.7x|2.8x|2.9x|3.0x|3.1x|3.2x|3.3x|3.4x|3.5x|3.6x|3.7x|3.8x|3.9x|4.0x" },
@@ -1254,6 +1703,10 @@ index 0000000..93449d3
 +	return multiAudioParseMode(_getVariable("mgba_multi_audio"));
 +}
 +
++static enum MultiScreenOrder _requestedScreenOrder(void) {
++	return multiScreenOrderParse(_getVariable("mgba_multi_screen_order"));
++}
++
 +static unsigned _requestedDialogueSpeedTenths(void) {
 +	return multiDialogueParseTarget(_getVariable("mgba_multi_dialogue_speed"));
 +}
@@ -1270,6 +1723,7 @@ index 0000000..93449d3
 +
 +static void _initializeRuntimeSettings(void) {
 +	audioMode = _requestedAudioMode();
++	screenOrder = _requestedScreenOrder();
 +	dialogueSpeedTenths = _requestedDialogueSpeedTenths();
 +	dialogueAutoAdvance = _requestedDialogueAutoAdvance();
 +	for (unsigned i = 0; i < MULTI_MAX_INSTANCES; ++i) {
@@ -1281,6 +1735,7 @@ index 0000000..93449d3
 +
 +static void _updateRuntimeSettings(void) {
 +	audioMode = _requestedAudioMode();
++	screenOrder = _requestedScreenOrder();
 +	dialogueSpeedTenths = _requestedDialogueSpeedTenths();
 +	dialogueAutoAdvance = _requestedDialogueAutoAdvance();
 +	for (unsigned i = 0; i < MULTI_MAX_INSTANCES; ++i) {
@@ -1440,7 +1895,7 @@ index 0000000..93449d3
 +			instance->core, GBA_REGION_IWRAM, &iwramSize);
 +	fireRedDialogueInit(&instance->dialogueDetector, dialogueProfile,
 +			ewram, ewramSize, iwram, iwramSize, romData, romSize);
-+	instance->dialogueReleasePending = false;
++	multiDialogueInputGuardInit(&instance->dialogueInput);
 +	instance->dialogueWasEnabled = false;
 +	_loadBios(instance->core);
 +	instance->captureAudio = false;
@@ -1531,50 +1986,53 @@ index 0000000..93449d3
 +
 +static void _resetDialogueRuntime(struct MultiInstance* instance) {
 +	fireRedDialogueReset(&instance->dialogueDetector);
-+	instance->dialogueReleasePending = false;
++	multiDialogueInputGuardInit(&instance->dialogueInput);
++	instance->dialogueWasEnabled = false;
++}
++
++static void _disableDialogueRuntime(struct MultiInstance* instance) {
++	fireRedDialogueReset(&instance->dialogueDetector);
 +	instance->dialogueWasEnabled = false;
 +}
 +
 +static void _runInstanceFrames(unsigned index, const struct MultiFrameCommand* command) {
 +	struct MultiInstance* instance = &instances[index];
 +	const uint16_t advanceMask = (uint16_t) ((1U << GBA_KEY_A) | (1U << GBA_KEY_B));
-+	bool physicalAdvance = (command->keys & advanceMask) != 0;
++	uint16_t guardedKeys;
++	bool forceReleaseFrame = multiDialogueInputPrepare(&instance->dialogueInput,
++			command->keys, advanceMask, &guardedKeys);
++	bool physicalAdvance = (guardedKeys & advanceMask) != 0;
 +
 +	/* This is the steady-state fast path. With dialogue assist off there are no
 +	 * emulated-memory reads and the proven manual scheduler remains unchanged. */
-+	if (!command->dialogueEnabled && !instance->dialogueReleasePending) {
++	if (!command->dialogueEnabled && !forceReleaseFrame) {
 +		if (instance->dialogueWasEnabled) {
-+			_resetDialogueRuntime(instance);
++			_disableDialogueRuntime(instance);
 +		}
 +		_setInstanceAudioSpeed(index, command->manualSpeedTenths);
-+		_runCoreFrames(index, command->keys, command->manualFrames,
++		_runCoreFrames(index, guardedKeys, command->manualFrames,
 +				MULTI_SPEED_MAX_FRAMES);
 +		return;
 +	}
 +
 +	/* Every automatic or physical advance observed during an assisted dialogue
-+	 * is followed by at least one emulated frame with A/B released. This is done
++	 * is followed by exactly one emulated frame with A/B released. This is done
 +	 * before any new classification so the press cannot leak into a menu or
-+	 * battle created by the preceding script command. */
-+	if (instance->dialogueReleasePending) {
++	 * battle created by the preceding script command. A held physical button is
++	 * masked afterward, but it no longer stalls accelerated printing at 1x. */
++	if (forceReleaseFrame) {
 +		_setInstanceAudioSpeed(index, MULTI_SPEED_ONE);
-+		/* Always provide a genuinely released emulated frame. If a physical A/B
-+		 * remains held, keep suppressing it until the controller is released so
-+		 * neither that button nor an A-to-B change can create a second edge. */
-+		_runCoreFrames(index, command->keys & ~advanceMask, 1, 1);
-+		if (!physicalAdvance) {
-+			instance->dialogueReleasePending = false;
-+		}
-+		if (!command->dialogueEnabled && !instance->dialogueReleasePending) {
-+			_resetDialogueRuntime(instance);
++		_runCoreFrames(index, guardedKeys & ~advanceMask, 1, 1);
++		if (!command->dialogueEnabled) {
++			_disableDialogueRuntime(instance);
 +		}
 +		return;
 +	}
 +
 +	if (!command->dialogueEnabled) {
-+		_resetDialogueRuntime(instance);
++		_disableDialogueRuntime(instance);
 +		_setInstanceAudioSpeed(index, command->manualSpeedTenths);
-+		_runCoreFrames(index, command->keys, command->manualFrames,
++		_runCoreFrames(index, guardedKeys, command->manualFrames,
 +				MULTI_SPEED_MAX_FRAMES);
 +		return;
 +	}
@@ -1587,7 +2045,7 @@ index 0000000..93449d3
 +			fireRedDialogueInspect(&instance->dialogueDetector);
 +	if (state == FIRERED_DIALOGUE_BLOCKED) {
 +		_setInstanceAudioSpeed(index, command->manualSpeedTenths);
-+		_runCoreFrames(index, command->keys, command->manualFrames,
++		_runCoreFrames(index, guardedKeys, command->manualFrames,
 +				MULTI_SPEED_MAX_FRAMES);
 +		return;
 +	}
@@ -1596,12 +2054,12 @@ index 0000000..93449d3
 +	 * for a clean release also guarantees that a later synthetic A has an edge. */
 +	if (physicalAdvance) {
 +		_setInstanceAudioSpeed(index, MULTI_SPEED_ONE);
-+		_runCoreFrames(index, command->keys, 1, 1);
-+		instance->dialogueReleasePending = true;
++		_runCoreFrames(index, guardedKeys, 1, 1);
++		multiDialogueInputAdvanced(&instance->dialogueInput);
 +		return;
 +	}
 +
-+	uint16_t releasedKeys = command->keys & ~advanceMask;
++	uint16_t releasedKeys = guardedKeys & ~advanceMask;
 +	if (state == FIRERED_DIALOGUE_PRINTING) {
 +		unsigned frameBudget = command->dialogueSpeedTenths / MULTI_SPEED_ONE;
 +		if (frameBudget < MULTI_DIALOGUE_MIN_TENTHS / MULTI_SPEED_ONE) {
@@ -1641,13 +2099,14 @@ index 0000000..93449d3
 +	_setInstanceAudioSpeed(index, MULTI_SPEED_ONE);
 +	if (state == FIRERED_DIALOGUE_PAGE_WAIT && command->dialogueAutoAdvance) {
 +		_runCoreFrames(index, releasedKeys | (1U << GBA_KEY_A), 1, 1);
-+		instance->dialogueReleasePending = true;
++		multiDialogueInputAdvanced(&instance->dialogueInput);
 +		return;
 +	}
-+	if (state == FIRERED_DIALOGUE_TERMINAL_WAIT && command->dialogueAutoAdvance) {
++	if (state == FIRERED_DIALOGUE_TERMINAL_WAIT && command->dialogueAutoAdvance &&
++			fireRedDialogueCanAutoAdvanceTerminal(&instance->dialogueDetector)) {
 +		_runCoreFrames(index, releasedKeys | (1U << GBA_KEY_A), 1, 1);
 +		fireRedDialogueConsumeTerminal(&instance->dialogueDetector);
-+		instance->dialogueReleasePending = true;
++		multiDialogueInputAdvanced(&instance->dialogueInput);
 +		return;
 +	}
 +
@@ -1981,17 +2440,6 @@ index 0000000..93449d3
 +	_frontendLog(RETRO_LOG_INFO, "%s", text);
 +}
 +
-+static void _composeVideo(const struct MultiLayout* layout) {
-+	for (unsigned i = 0; i < instanceCount; ++i) {
-+		const struct MultiPlacement* placement = &layout->placement[i];
-+		for (unsigned y = 0; y < MULTI_VIDEO_HEIGHT; ++y) {
-+			memcpy(&compositeBuffer[(placement->y + y) * layout->width + placement->x],
-+					&instances[i].video[y * VIDEO_STRIDE],
-+					MULTI_VIDEO_WIDTH * sizeof(*compositeBuffer));
-+		}
-+	}
-+}
-+
 +static void _drainInstanceAudio(struct MultiInstance* instance) {
 +	struct mAudioBuffer* buffer = instance->core->getAudioBuffer(instance->core);
 +	for (;;) {
@@ -2261,8 +2709,15 @@ index 0000000..93449d3
 +	_syncRtcTrailers();
 +
 +	struct MultiLayout layout;
-+	if (videoCallback && multiLayoutForCount(instanceCount, &layout)) {
-+		_composeVideo(&layout);
++	unsigned playerAtSlot[MULTI_MAX_INSTANCES];
++	const void* sourceVideo[MULTI_MAX_INSTANCES] = {
++		instances[0].video, instances[1].video, instances[2].video,
++	};
++	if (videoCallback && multiLayoutForCount(instanceCount, &layout) &&
++			multiScreenOrderResolve(screenOrder, instanceCount, playerAtSlot) &&
++			multiComposeFrames(compositeBuffer, COMPOSITE_BUFFER_PIXELS,
++				sizeof(*compositeBuffer), sourceVideo, VIDEO_STRIDE,
++				instanceCount, &layout, playerAtSlot)) {
 +		videoCallback(compositeBuffer, layout.width, layout.height,
 +				layout.width * sizeof(*compositeBuffer));
 +	}
@@ -2329,10 +2784,10 @@ index 0000000..93449d3
 +}
 diff --git a/src/platform/libretro/libretro_multi_support.c b/src/platform/libretro/libretro_multi_support.c
 new file mode 100644
-index 0000000..b082be7
+index 0000000..96b080f
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi_support.c
-@@ -0,0 +1,320 @@
+@@ -0,0 +1,449 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -2367,6 +2822,92 @@ index 0000000..b082be7
 +		break;
 +	default:
 +		return false;
++	}
++	return true;
++}
++
++enum MultiScreenOrder multiScreenOrderParse(const char* value) {
++	static const char* const values[MULTI_SCREEN_ORDER_COUNT] = {
++		"P1-P2-P3",
++		"P1-P3-P2",
++		"P2-P1-P3",
++		"P2-P3-P1",
++		"P3-P1-P2",
++		"P3-P2-P1",
++	};
++
++	if (value) {
++		for (unsigned order = 0; order < MULTI_SCREEN_ORDER_COUNT; ++order) {
++			if (!strcmp(value, values[order])) {
++				return (enum MultiScreenOrder) order;
++			}
++		}
++	}
++	return MULTI_SCREEN_ORDER_DEFAULT;
++}
++
++bool multiScreenOrderResolve(enum MultiScreenOrder order, unsigned activeCount,
++		unsigned playerAtSlot[MULTI_MAX_INSTANCES]) {
++	static const unsigned players[MULTI_SCREEN_ORDER_COUNT][MULTI_MAX_INSTANCES] = {
++		{ 0, 1, 2 },
++		{ 0, 2, 1 },
++		{ 1, 0, 2 },
++		{ 1, 2, 0 },
++		{ 2, 0, 1 },
++		{ 2, 1, 0 },
++	};
++
++	if (!playerAtSlot || activeCount < 1 || activeCount > MULTI_MAX_INSTANCES ||
++			(unsigned) order >= MULTI_SCREEN_ORDER_COUNT) {
++		return false;
++	}
++
++	unsigned slot = 0;
++	for (unsigned position = 0; position < MULTI_MAX_INSTANCES; ++position) {
++		unsigned player = players[order][position];
++		if (player < activeCount) {
++			playerAtSlot[slot++] = player;
++		}
++	}
++	return slot == activeCount;
++}
++
++bool multiComposeFrames(void* destination, size_t destinationPixels,
++		size_t pixelSize, const void* const sources[MULTI_MAX_INSTANCES],
++		size_t sourceStridePixels, unsigned activeCount,
++		const struct MultiLayout* layout,
++		const unsigned playerAtSlot[MULTI_MAX_INSTANCES]) {
++	if (!destination || !pixelSize || !sources || !layout || !playerAtSlot ||
++			activeCount < 1 || activeCount > MULTI_MAX_INSTANCES ||
++			sourceStridePixels < MULTI_VIDEO_WIDTH || !layout->width ||
++			layout->height > destinationPixels / layout->width) {
++		return false;
++	}
++
++	for (unsigned slot = 0; slot < activeCount; ++slot) {
++		unsigned player = playerAtSlot[slot];
++		const struct MultiPlacement* placement = &layout->placement[slot];
++		if (player >= activeCount || !sources[player] ||
++				placement->x > layout->width ||
++				MULTI_VIDEO_WIDTH > layout->width - placement->x ||
++				placement->y > layout->height ||
++				MULTI_VIDEO_HEIGHT > layout->height - placement->y) {
++			return false;
++		}
++	}
++
++	uint8_t* output = destination;
++	for (unsigned slot = 0; slot < activeCount; ++slot) {
++		unsigned player = playerAtSlot[slot];
++		const struct MultiPlacement* placement = &layout->placement[slot];
++		const uint8_t* source = sources[player];
++		for (unsigned y = 0; y < MULTI_VIDEO_HEIGHT; ++y) {
++			size_t destinationOffset =
++					((size_t) placement->y + y) * layout->width + placement->x;
++			memcpy(output + destinationOffset * pixelSize,
++					source + y * sourceStridePixels * pixelSize,
++					MULTI_VIDEO_WIDTH * pixelSize);
++		}
 +	}
 +	return true;
 +}
@@ -2495,6 +3036,49 @@ index 0000000..b082be7
 +	}
 +	state->enabled = !state->enabled;
 +	return state->enabled ? MULTI_DIALOGUE_TOGGLE_ENABLED : MULTI_DIALOGUE_TOGGLE_DISABLED;
++}
++
++void multiDialogueInputGuardInit(struct MultiDialogueInputGuard* guard) {
++	if (!guard) {
++		return;
++	}
++	guard->releasePending = false;
++	guard->advanceLockout = false;
++}
++
++bool multiDialogueInputPrepare(struct MultiDialogueInputGuard* guard,
++		uint16_t rawKeys, uint16_t advanceMask, uint16_t* effectiveKeys) {
++	if (!effectiveKeys) {
++		return false;
++	}
++	*effectiveKeys = rawKeys;
++	if (!guard) {
++		return false;
++	}
++
++	bool physicalAdvance = (rawKeys & advanceMask) != 0;
++	if (guard->advanceLockout) {
++		if (physicalAdvance) {
++			*effectiveKeys &= (uint16_t) ~advanceMask;
++		} else {
++			guard->advanceLockout = false;
++		}
++	}
++
++	bool forceRelease = guard->releasePending;
++	if (forceRelease) {
++		guard->releasePending = false;
++		*effectiveKeys &= (uint16_t) ~advanceMask;
++	}
++	return forceRelease;
++}
++
++void multiDialogueInputAdvanced(struct MultiDialogueInputGuard* guard) {
++	if (!guard) {
++		return;
++	}
++	guard->releasePending = true;
++	guard->advanceLockout = true;
 +}
 +
 +enum MultiAudioMode multiAudioParseMode(const char* value) {
@@ -2655,10 +3239,10 @@ index 0000000..b082be7
 +}
 diff --git a/src/platform/libretro/libretro_multi_support.h b/src/platform/libretro/libretro_multi_support.h
 new file mode 100644
-index 0000000..19d4474
+index 0000000..b3a1752
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi_support.h
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,139 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -2701,6 +3285,18 @@ index 0000000..19d4474
 +	struct MultiPlacement placement[MULTI_MAX_INSTANCES];
 +};
 +
++enum MultiScreenOrder {
++	MULTI_SCREEN_ORDER_P1_P2_P3 = 0,
++	MULTI_SCREEN_ORDER_P1_P3_P2,
++	MULTI_SCREEN_ORDER_P2_P1_P3,
++	MULTI_SCREEN_ORDER_P2_P3_P1,
++	MULTI_SCREEN_ORDER_P3_P1_P2,
++	MULTI_SCREEN_ORDER_P3_P2_P1,
++	MULTI_SCREEN_ORDER_COUNT,
++};
++
++#define MULTI_SCREEN_ORDER_DEFAULT MULTI_SCREEN_ORDER_P1_P2_P3
++
 +struct MultiAudioClock {
 +	uint64_t remainder;
 +};
@@ -2715,6 +3311,15 @@ index 0000000..19d4474
 +struct MultiDialogueToggleState {
 +	bool enabled;
 +	bool buttonDown;
++};
++
++/* A dialogue advance is a one-frame pulse. After either a physical or
++ * synthetic pulse, one released emulated frame is owed. A physical button
++ * that remains held is then masked until both A and B have been released,
++ * without stalling the normal dialogue scheduler. */
++struct MultiDialogueInputGuard {
++	bool releasePending;
++	bool advanceLockout;
 +};
 +
 +enum MultiDialogueToggleResult {
@@ -2739,6 +3344,14 @@ index 0000000..19d4474
 +};
 +
 +bool multiLayoutForCount(unsigned count, struct MultiLayout* layout);
++enum MultiScreenOrder multiScreenOrderParse(const char* value);
++bool multiScreenOrderResolve(enum MultiScreenOrder order, unsigned activeCount,
++		unsigned playerAtSlot[MULTI_MAX_INSTANCES]);
++bool multiComposeFrames(void* destination, size_t destinationPixels,
++		size_t pixelSize, const void* const sources[MULTI_MAX_INSTANCES],
++		size_t sourceStridePixels, unsigned activeCount,
++		const struct MultiLayout* layout,
++		const unsigned playerAtSlot[MULTI_MAX_INSTANCES]);
 +unsigned multiSpeedParseTarget(const char* value);
 +void multiSpeedInit(struct MultiSpeedState* speed);
 +void multiSpeedSetTarget(struct MultiSpeedState* speed, unsigned targetTenths);
@@ -2750,6 +3363,10 @@ index 0000000..19d4474
 +void multiDialogueToggleInit(struct MultiDialogueToggleState* state);
 +enum MultiDialogueToggleResult multiDialogueHandleL2(
 +		struct MultiDialogueToggleState* state, bool pressed, bool available);
++void multiDialogueInputGuardInit(struct MultiDialogueInputGuard* guard);
++bool multiDialogueInputPrepare(struct MultiDialogueInputGuard* guard,
++		uint16_t rawKeys, uint16_t advanceMask, uint16_t* effectiveKeys);
++void multiDialogueInputAdvanced(struct MultiDialogueInputGuard* guard);
 +enum MultiAudioMode multiAudioParseMode(const char* value);
 +int multiAudioSelectedIndex(enum MultiAudioMode mode, unsigned activeCount);
 +void multiAudioClockReset(struct MultiAudioClock* clock);
@@ -2767,7 +3384,7 @@ index 0000000..19d4474
 +#endif
 diff --git a/src/platform/libretro/mgba_multi_libretro.info b/src/platform/libretro/mgba_multi_libretro.info
 new file mode 100644
-index 0000000..0ea5fd7
+index 0000000..52bbc3a
 --- /dev/null
 +++ b/src/platform/libretro/mgba_multi_libretro.info
 @@ -0,0 +1,13 @@
@@ -2782,7 +3399,7 @@ index 0000000..0ea5fd7
 +database = "Nintendo - Game Boy Advance"
 +license = "MPLv2"
 +permissions = ""
-+display_version = "0.11-dev-multi.0.3.0"
++display_version = "0.11-dev-multi.0.3.1"
 +supports_no_game = "false"
 diff --git a/tests/libretro_audio_test.c b/tests/libretro_audio_test.c
 new file mode 100644
@@ -3042,10 +3659,10 @@ index 0000000..0e359ba
 +}
 diff --git a/tests/libretro_firered_dialogue_test.c b/tests/libretro_firered_dialogue_test.c
 new file mode 100644
-index 0000000..c0b87e3
+index 0000000..dda5931
 --- /dev/null
 +++ b/tests/libretro_firered_dialogue_test.c
-@@ -0,0 +1,505 @@
+@@ -0,0 +1,971 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -3103,6 +3720,9 @@ index 0000000..c0b87e3
 +	uint32_t waitAorB;
 +	uint32_t taskBattle;
 +	uint32_t choices[3];
++	uint32_t safeWaits[4];
++	uint32_t stdScripts;
++	uint32_t yesNoCommand;
 +	uint32_t trainerStart;
 +	uint32_t trainerEnd;
 +};
@@ -3117,6 +3737,9 @@ index 0000000..c0b87e3
 +		.waitAorB = 0x0806B898U,
 +		.taskBattle = 0x0807F620U,
 +		.choices = { 0x0809CC98U, 0x0809CE54U, 0x0809CFDCU },
++		.safeWaits = { 0x081A4E47U, 0x081A4E51U, 0x081A4E5AU, 0x081A5025U },
++		.stdScripts = 0x08160450U,
++		.yesNoCommand = 0x081A4E62U,
 +		.trainerStart = 0x081A4EB4U,
 +		.trainerEnd = 0x081A501FU,
 +	},
@@ -3129,6 +3752,9 @@ index 0000000..c0b87e3
 +		.waitAorB = 0x0806B8ACU,
 +		.taskBattle = 0x0807F634U,
 +		.choices = { 0x0809CCACU, 0x0809CE68U, 0x0809CFF0U },
++		.safeWaits = { 0x081A4EBFU, 0x081A4EC9U, 0x081A4ED2U, 0x081A509DU },
++		.stdScripts = 0x081604C8U,
++		.yesNoCommand = 0x081A4EDAU,
 +		.trainerStart = 0x081A4F2CU,
 +		.trainerEnd = 0x081A5097U,
 +	},
@@ -3197,7 +3823,7 @@ index 0000000..c0b87e3
 +	fixture->rom = calloc(1, ROM_SIZE);
 +	assert(fixture->ewram && fixture->iwram && fixture->rom);
 +	fixture->profile = profile;
-+	fixture->script = ROM_BASE + 0x10000U;
++	fixture->script = profile->safeWaits[2];
 +	fireRedDialogueInit(&fixture->detector, profile->id,
 +			fixture->ewram, EWRAM_SIZE, fixture->iwram, IWRAM_SIZE,
 +			fixture->rom, ROM_SIZE);
@@ -3215,8 +3841,16 @@ index 0000000..c0b87e3
 +	assert(fireRedDialogueInspect(&fixture->detector) ==
 +			FIRERED_DIALOGUE_BLOCKED);
 +	assert(!fixture->detector.sessionArmed);
++	assert(!fireRedDialogueCanAutoAdvanceTerminal(&fixture->detector));
 +	fireRedDialogueConsumeTerminal(&fixture->detector);
 +	assert(fixture->detector.lastState == FIRERED_DIALOGUE_BLOCKED);
++}
++
++static void assertSpeedOnly(struct Fixture* fixture) {
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_PRINTING);
++	assert(fixture->detector.sessionArmed);
++	assert(!fireRedDialogueCanAutoAdvanceTerminal(&fixture->detector));
 +}
 +
 +static void testHashesAndBounds(void) {
@@ -3240,6 +3874,7 @@ index 0000000..c0b87e3
 +	assert(fireRedDialogueProfileSupported(FIRERED_DIALOGUE_PROFILE_ENGLISH_1_1));
 +	assert(!fireRedDialogueProfileSupported((enum FireRedDialogueProfile) 99));
 +	assert(fireRedDialogueInspect(NULL) == FIRERED_DIALOGUE_BLOCKED);
++	assert(!fireRedDialogueCanAutoAdvanceTerminal(NULL));
 +	fireRedDialogueReset(NULL);
 +	fireRedDialogueConsumeTerminal(NULL);
 +
@@ -3274,15 +3909,298 @@ index 0000000..c0b87e3
 +		assert(fireRedDialogueInspect(&fixture->detector) ==
 +				FIRERED_DIALOGUE_PRINTING);
 +		assert(fixture->detector.sessionArmed);
++		assert(fireRedDialogueCanAutoAdvanceTerminal(&fixture->detector));
 +	}
 +	for (size_t i = 0; i < sizeof(waiting); ++i) {
 +		setOrdinary(fixture, waiting[i]);
 +		assert(fireRedDialogueInspect(&fixture->detector) ==
 +				FIRERED_DIALOGUE_PAGE_WAIT);
 +		assert(fixture->detector.sessionArmed);
++		assert(fireRedDialogueCanAutoAdvanceTerminal(&fixture->detector));
 +	}
 +	setOrdinary(fixture, 7);
 +	assertBlocked(fixture);
++}
++
++static void testExactMsgboxWaits(struct Fixture* fixture) {
++	for (size_t i = 0;
++			i < sizeof(fixture->profile->safeWaits) /
++				sizeof(*fixture->profile->safeWaits); ++i) {
++		setOrdinary(fixture, 0);
++		write32(fixture->iwram, IWRAM_BASE, CONTEXT_SCRIPT,
++				fixture->profile->safeWaits[i]);
++		write8(fixture->rom, ROM_BASE, fixture->profile->safeWaits[i], 0x6D);
++		write8(fixture->rom, ROM_BASE, fixture->profile->safeWaits[i] + 1U,
++				0x02);
++		assert(fireRedDialogueInspect(&fixture->detector) ==
++				FIRERED_DIALOGUE_PRINTING);
++		assert(fireRedDialogueCanAutoAdvanceTerminal(&fixture->detector));
++	}
++}
++
++static void testBenignContinuations(struct Fixture* fixture) {
++	static const struct {
++		uint8_t opcode;
++		uint8_t width;
++	} benign[] = {
++		{ 0x16, 5 }, /* setvar */
++		{ 0x17, 5 }, /* addvar */
++		{ 0x18, 5 }, /* subvar */
++		{ 0x19, 5 }, /* copyvar */
++		{ 0x1A, 5 }, /* setorcopyvar */
++		{ 0x28, 3 }, /* delay */
++		{ 0x29, 3 }, /* setflag */
++		{ 0x2A, 3 }, /* clearflag */
++		{ 0x2F, 3 }, /* playse */
++		{ 0x30, 1 }, /* waitse */
++		{ 0x31, 3 }, /* playfanfare */
++		{ 0x32, 1 }, /* waitfanfare */
++		{ 0x4F, 7 }, /* applymovement */
++		{ 0x51, 3 }, /* waitmovement */
++		{ 0x69, 1 }, /* lockall */
++		{ 0x6A, 1 }, /* lock */
++	};
++	for (size_t i = 0; i < sizeof(benign) / sizeof(*benign); ++i) {
++		setOrdinary(fixture, 0);
++		write8(fixture->rom, ROM_BASE, fixture->script + 1U,
++				benign[i].opcode);
++		write8(fixture->rom, ROM_BASE,
++				fixture->script + 1U + benign[i].width, 0x02);
++		assert(fireRedDialogueInspect(&fixture->detector) ==
++				FIRERED_DIALOGUE_PRINTING);
++		assert(fixture->detector.sessionArmed);
++		assert(!fireRedDialogueCanAutoAdvanceTerminal(&fixture->detector));
++	}
++
++	/* The next known non-choice msgbox is a boundary. Its call is not entered
++	 * automatically, but the current active box remains eligible for speed-up. */
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x0F);
++	write8(fixture->rom, ROM_BASE, fixture->script + 7U, 0x09);
++	write8(fixture->rom, ROM_BASE, fixture->script + 8U, 0x04);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_PRINTING);
++	assert(!fireRedDialogueCanAutoAdvanceTerminal(&fixture->detector));
++
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x67);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_PRINTING);
++	assert(!fireRedDialogueCanAutoAdvanceTerminal(&fixture->detector));
++
++	/* A choice after an otherwise benign command poisons the entire current
++	 * prompt instead of being hidden behind BENIGN_NO_TERMINAL. */
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x16);
++	write8(fixture->rom, ROM_BASE, fixture->script + 6U, 0x6F);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x09);
++	write8(fixture->rom, ROM_BASE, fixture->script + 2U, 0x05);
++	assertBlocked(fixture);
++}
++
++static void testControlFlowProof(struct Fixture* fixture) {
++	const uint32_t target = ROM_BASE + 0x10000U;
++	const uint32_t second = ROM_BASE + 0x10100U;
++
++	/* Unconditional branches are followed only when their exact target proves
++	 * safe. They remain speed-only even when the target is a plain end. */
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x05);
++	write32(fixture->rom, ROM_BASE, fixture->script + 2U, target);
++	write8(fixture->rom, ROM_BASE, target, 0x02);
++	assertSpeedOnly(fixture);
++
++	/* Both successors of a conditional branch must prove safe. */
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x06);
++	write32(fixture->rom, ROM_BASE, fixture->script + 3U, target);
++	write8(fixture->rom, ROM_BASE, fixture->script + 7U, 0x02);
++	write8(fixture->rom, ROM_BASE, target, 0x02);
++	assertSpeedOnly(fixture);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x06);
++	write32(fixture->rom, ROM_BASE, fixture->script + 3U, target);
++	write8(fixture->rom, ROM_BASE, fixture->script + 7U, 0x02);
++	write8(fixture->rom, ROM_BASE, target, 0x6F);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x06);
++	write32(fixture->rom, ROM_BASE, fixture->script + 3U, target);
++	write8(fixture->rom, ROM_BASE, fixture->script + 7U, 0x02);
++	write8(fixture->rom, ROM_BASE, target, 0x5C);
++	assertBlocked(fixture);
++
++	/* Calls use a modeled return stack; conditional calls prove both the taken
++	 * and untaken path. */
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x04);
++	write32(fixture->rom, ROM_BASE, fixture->script + 2U, target);
++	write8(fixture->rom, ROM_BASE, fixture->script + 6U, 0x02);
++	write8(fixture->rom, ROM_BASE, target, 0x03);
++	assertSpeedOnly(fixture);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x07);
++	write32(fixture->rom, ROM_BASE, fixture->script + 3U, target);
++	write8(fixture->rom, ROM_BASE, fixture->script + 7U, 0x02);
++	write8(fixture->rom, ROM_BASE, target, 0x03);
++	assertSpeedOnly(fixture);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x04);
++	write32(fixture->rom, ROM_BASE, fixture->script + 2U, target);
++	write8(fixture->rom, ROM_BASE, fixture->script + 6U, 0x02);
++	write8(fixture->rom, ROM_BASE, target, 0x25);
++	assertBlocked(fixture);
++
++	/* Non-message standard scripts are resolved through the revision-specific
++	 * gStdScripts table. Message standards are boundaries; yes/no is forbidden. */
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x09);
++	write8(fixture->rom, ROM_BASE, fixture->script + 2U, 0x00);
++	write8(fixture->rom, ROM_BASE, fixture->script + 3U, 0x02);
++	write32(fixture->rom, ROM_BASE, fixture->profile->stdScripts, target);
++	write8(fixture->rom, ROM_BASE, target, 0x03);
++	assertSpeedOnly(fixture);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x08);
++	write8(fixture->rom, ROM_BASE, fixture->script + 2U, 0x07);
++	write32(fixture->rom, ROM_BASE,
++			fixture->profile->stdScripts + 7U * sizeof(uint32_t), target);
++	write8(fixture->rom, ROM_BASE, target, 0x02);
++	assertSpeedOnly(fixture);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x0B);
++	write8(fixture->rom, ROM_BASE, fixture->script + 3U, 0x00);
++	write8(fixture->rom, ROM_BASE, fixture->script + 4U, 0x02);
++	write32(fixture->rom, ROM_BASE, fixture->profile->stdScripts, target);
++	write8(fixture->rom, ROM_BASE, target, 0x03);
++	assertSpeedOnly(fixture);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x0A);
++	write8(fixture->rom, ROM_BASE, fixture->script + 3U, 0x05);
++	write8(fixture->rom, ROM_BASE, fixture->script + 4U, 0x02);
++	assertBlocked(fixture);
++
++	/* Back-edges fail closed, even when another branch reaches end. */
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x05);
++	write32(fixture->rom, ROM_BASE, fixture->script + 2U,
++			fixture->script + 1U);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x06);
++	write32(fixture->rom, ROM_BASE, fixture->script + 3U,
++			fixture->script + 1U);
++	write8(fixture->rom, ROM_BASE, fixture->script + 7U, 0x02);
++	assertBlocked(fixture);
++
++	/* Representative easy-to-mis-size commands prove the checked width table. */
++	static const struct {
++		uint8_t opcode;
++		uint8_t width;
++	} widths[] = {
++		{ 0x2C, 1 }, /* initclock is a one-byte FRLG no-op */
++		{ 0x39, 8 }, /* warp */
++		{ 0x3C, 3 }, /* warphole */
++		{ 0x50, 9 }, /* applymovementat */
++		{ 0x52, 5 }, /* waitmovementat */
++		{ 0x74, 1 }, /* drawboxtext is a one-byte FRLG no-op */
++		{ 0x7D, 4 }, /* bufferspeciesname */
++		{ 0x7E, 2 }, /* bufferleadmonspeciesname */
++		{ 0x85, 6 }, /* bufferstring */
++		{ 0x8A, 1 }, /* setberrytree is a one-byte FRLG no-op */
++		{ 0x94, 1 }, /* hidemoneybox consumes no legacy coordinates */
++		{ 0x96, 1 }, /* getpokenewsactive is a one-byte FRLG no-op */
++		{ 0xBF, 6 }, /* vbufferstring is forbidden despite its fixed width */
++		{ 0xC6, 4 }, /* bufferboxname */
++		{ 0xD4, 6 }, /* bufferitemnameplural */
++	};
++	for (size_t i = 0; i < sizeof(widths) / sizeof(*widths); ++i) {
++		setOrdinary(fixture, 0);
++		write8(fixture->rom, ROM_BASE, fixture->script + 1U,
++				widths[i].opcode);
++		write8(fixture->rom, ROM_BASE,
++				fixture->script + 1U + widths[i].width, 0x02);
++		if (widths[i].opcode == 0xBF) {
++			assertBlocked(fixture);
++		} else {
++			assertSpeedOnly(fixture);
++		}
++	}
++
++	/* A large finite graph just below the bound succeeds; exceeding the bound
++	 * fails closed. */
++	for (unsigned count = 500U; count <= 512U; count += 12U) {
++		setOrdinary(fixture, 0);
++		write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x05);
++		write32(fixture->rom, ROM_BASE, fixture->script + 2U, target);
++		for (unsigned i = 0; i < count; ++i) {
++			uint32_t cursor = target + i * 5U;
++			write8(fixture->rom, ROM_BASE, cursor, 0x05);
++			write32(fixture->rom, ROM_BASE, cursor + 1U, cursor + 5U);
++		}
++		write8(fixture->rom, ROM_BASE, target + count * 5U, 0x02);
++		if (count == 500U) {
++			assertSpeedOnly(fixture);
++		} else {
++			assertBlocked(fixture);
++		}
++	}
++
++	/* Nineteen modeled return addresses are valid; a twentieth prospective
++	 * push reproduces ScriptPush's ambiguous overflow and is rejected. */
++	setOrdinary(fixture, 0);
++	for (unsigned i = 0; i < 19U; ++i) {
++		uint32_t cursor = target + i * 5U;
++		write8(fixture->rom, ROM_BASE, cursor, 0x04);
++		write32(fixture->rom, ROM_BASE, cursor + 1U, cursor + 5U);
++	}
++	write8(fixture->rom, ROM_BASE, target + 19U * 5U, 0x02);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x05);
++	write32(fixture->rom, ROM_BASE, fixture->script + 2U, target);
++	assertSpeedOnly(fixture);
++
++	setOrdinary(fixture, 0);
++	for (unsigned i = 0; i < 20U; ++i) {
++		uint32_t cursor = second + i * 5U;
++		write8(fixture->rom, ROM_BASE, cursor, 0x04);
++		write32(fixture->rom, ROM_BASE, cursor + 1U, cursor + 5U);
++	}
++	write8(fixture->rom, ROM_BASE, second + 20U * 5U, 0x02);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x05);
++	write32(fixture->rom, ROM_BASE, fixture->script + 2U, second);
++	assertBlocked(fixture);
++}
++
++static void testTailClassificationCache(struct Fixture* fixture) {
++	/* Forbidden immutable tails are cached independently of the armed terminal
++	 * session, so they are not re-proved on every frontend frame. */
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x25);
++	assertBlocked(fixture);
++	assert(fixture->detector.cachedTailValid);
++	assert(fixture->detector.cachedTailSafety == 0U);
++
++	/* The production ROM is immutable. Mutating this fixture demonstrates that
++	 * the same wait/stack key reuses even a forbidden verdict. */
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x02);
++	assertBlocked(fixture);
++
++	fireRedDialogueReset(&fixture->detector);
++	assert(!fixture->detector.cachedTailValid);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_PRINTING);
++	assert(fireRedDialogueCanAutoAdvanceTerminal(&fixture->detector));
 +}
 +
 +static void testEveryOrdinaryGuard(struct Fixture* fixture) {
@@ -3321,19 +4239,68 @@ index 0000000..c0b87e3
 +	write8(fixture->rom, ROM_BASE, fixture->script, 0x6C);
 +	assertBlocked(fixture);
 +
-+	/* Text directly preceding gameplay, a choice, or an unknown continuation
-+	 * is never armed even before the forbidden task/battle itself exists. */
++	/* Only exact waits in the four non-choice standard msgbox scripts qualify.
++	 * An arbitrary byte-identical wait and the standard yes/no command fail closed. */
++	setOrdinary(fixture, 0);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_SCRIPT,
++			ROM_BASE + 0x10000U);
++	write8(fixture->rom, ROM_BASE, ROM_BASE + 0x10000U, 0x6D);
++	write8(fixture->rom, ROM_BASE, ROM_BASE + 0x10001U, 0x02);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_SCRIPT,
++			fixture->profile->yesNoCommand);
++	write8(fixture->rom, ROM_BASE, fixture->profile->yesNoCommand, 0x6E);
++	write8(fixture->rom, ROM_BASE, fixture->profile->yesNoCommand + 1U, 0x02);
++	assertBlocked(fixture);
++
++	/* Text directly preceding a choice, battle, native/special call, scripted
++	 * encounter, or unknown continuation is never armed. */
 +	static const uint8_t unsafeContinuations[] = {
 +		0x00, /* nop/unknown continuation */
-+		0x16, /* setvar */
++		0x04, /* call */
++		0x05, /* goto */
++		0x06, /* conditional goto */
++		0x07, /* conditional call */
++		0x08, /* gotostd */
++		0x0A, /* conditional gotostd */
++		0x0B, /* conditional callstd */
++		0x0C, /* returnram */
++		0x23, /* callnative */
++		0x24, /* gotonative */
 +		0x25, /* special (including scripted legendary starts) */
-+		0x29, /* setflag */
++		0x26, /* specialvar */
++		0x27, /* waitstate */
 +		0x5C, /* trainerbattle */
 +		0x5D, /* dotrainerbattle */
++		0x5E, /* gotopostbattlescript */
++		0x5F, /* gotobeatenscript */
 +		0x6E, /* yesnobox */
 +		0x6F, /* multichoice */
 +		0x70, /* multichoicedefault */
 +		0x71, /* multichoicegrid */
++		0x86, /* pokemart */
++		0x87, /* pokemartdecoration */
++		0x88, /* pokemartdecoration2 */
++		0x89, /* playslotmachine */
++		0x8B, /* choosecontestmon */
++		0x8C, /* startcontest */
++		0x8D, /* showcontestresults */
++		0x8E, /* contestlinktransfer */
++		0xB1, /* addelevmenuitem */
++		0xB2, /* showelevmenu */
++		0xB6, /* setwildbattle */
++		0xB7, /* dowildbattle */
++		0xB8, /* setvaddress */
++		0xB9, /* vgoto */
++		0xBA, /* vcall */
++		0xBB, /* vgoto_if */
++		0xBC, /* vcall_if */
++		0xBD, /* vmessage */
++		0xBE, /* vbuffermessage */
++		0xBF, /* vbufferstring */
++		0xCF, /* trywondercardscript / RAM-script control */
 +	};
 +	for (size_t i = 0;
 +			i < sizeof(unsafeContinuations) / sizeof(*unsafeContinuations); ++i) {
@@ -3357,6 +4324,7 @@ index 0000000..c0b87e3
 +	write8(fixture->rom, ROM_BASE, fixture->script + 0x40U, 0x02);
 +	assert(fireRedDialogueInspect(&fixture->detector) ==
 +			FIRERED_DIALOGUE_PRINTING);
++	assert(fireRedDialogueCanAutoAdvanceTerminal(&fixture->detector));
 +
 +	setOrdinary(fixture, 0);
 +	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x03);
@@ -3364,6 +4332,20 @@ index 0000000..c0b87e3
 +	write32(fixture->iwram, IWRAM_BASE, CONTEXT_STACK,
 +			fixture->script + 0x20U);
 +	write8(fixture->rom, ROM_BASE, fixture->script + 0x20U, 0x5C);
++	assertBlocked(fixture);
++
++	/* A standard msgbox nested under the fixed trainer-script range is blocked
++	 * even if its immediate continuation looks cosmetic. */
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x03);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_STACK_DEPTH, 1);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_STACK,
++			fixture->profile->trainerStart);
++	write8(fixture->rom, ROM_BASE, fixture->profile->trainerStart, 0x02);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_STACK_DEPTH, 19);
 +	assertBlocked(fixture);
 +
 +	setOrdinary(fixture, 0);
@@ -3374,6 +4356,41 @@ index 0000000..c0b87e3
 +	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x03);
 +	write8(fixture->iwram, IWRAM_BASE, CONTEXT_STACK_DEPTH, 1);
 +	write32(fixture->iwram, IWRAM_BASE, CONTEXT_STACK, ROM_BASE - 1U);
++	assertBlocked(fixture);
++
++	/* The message-tail cache is tied to the actual return stack, not only its
++	 * depth. A changed continuation is reclassified before another fast frame. */
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x03);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_STACK_DEPTH, 1);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_STACK,
++			fixture->script + 0x20U);
++	write8(fixture->rom, ROM_BASE, fixture->script + 0x20U, 0x02);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_PRINTING);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_STACK,
++			fixture->script + 0x40U);
++	write8(fixture->rom, ROM_BASE, fixture->script + 0x40U, 0x6F);
++	assertBlocked(fixture);
++
++	/* Exact stack snapshots, rather than a 32-bit fingerprint, prevent a cached
++	 * terminal verdict from crossing even a deliberately colliding stack pair. */
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x03);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_STACK_DEPTH, 2);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_STACK, 0x08010000U);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_STACK + 4U, 0x08010100U);
++	write8(fixture->rom, ROM_BASE, 0x08010100U, 0x03);
++	write8(fixture->rom, ROM_BASE, 0x08010000U, 0x02);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_PRINTING);
++	assert(fireRedDialogueCanAutoAdvanceTerminal(&fixture->detector));
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_STACK, 0x08034004U);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_STACK + 4U, 0x08B44ACCU);
++	write8(fixture->rom, ROM_BASE, 0x08B44ACCU, 0x6F);
++	assertBlocked(fixture);
++	assert(fixture->detector.cachedTailValid);
++	/* The preserved immutable-tail cache must also reject the colliding key. */
 +	assertBlocked(fixture);
 +
 +	/* Even a syntactically harmless but corrupt non-terminating continuation is
@@ -3408,12 +4425,14 @@ index 0000000..c0b87e3
 +	write8(fixture->rom, ROM_BASE, fixture->profile->trainerEnd - 1U, 0x6D);
 +	assertBlocked(fixture);
 +
-+	/* The exclusive end of the trainer range is not itself blocked. */
++	/* The exclusive end of the trainer range is not itself blocked when it is
++	 * reached through the return stack of an exact standard msgbox. */
 +	setOrdinary(fixture, 0);
-+	write32(fixture->iwram, IWRAM_BASE, CONTEXT_SCRIPT,
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x03);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_STACK_DEPTH, 1);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_STACK,
 +			fixture->profile->trainerEnd);
-+	write8(fixture->rom, ROM_BASE, fixture->profile->trainerEnd, 0x6D);
-+	write8(fixture->rom, ROM_BASE, fixture->profile->trainerEnd + 1U, 0x02);
++	write8(fixture->rom, ROM_BASE, fixture->profile->trainerEnd, 0x02);
 +	assert(fireRedDialogueInspect(&fixture->detector) ==
 +			FIRERED_DIALOGUE_PRINTING);
 +
@@ -3446,6 +4465,7 @@ index 0000000..c0b87e3
 +	setOrdinary(fixture, 0);
 +	assert(fireRedDialogueInspect(&fixture->detector) ==
 +			FIRERED_DIALOGUE_PRINTING);
++	assert(fireRedDialogueCanAutoAdvanceTerminal(&fixture->detector));
 +	setHiddenTerminal(fixture);
 +	assert(fireRedDialogueInspect(&fixture->detector) ==
 +			FIRERED_DIALOGUE_TERMINAL_PENDING);
@@ -3465,6 +4485,7 @@ index 0000000..c0b87e3
 +	write32(fixture->iwram, IWRAM_BASE, CONTEXT_SCRIPT, fixture->script + 1U);
 +	assert(fireRedDialogueInspect(&fixture->detector) ==
 +			FIRERED_DIALOGUE_TERMINAL_WAIT);
++	assert(fireRedDialogueCanAutoAdvanceTerminal(&fixture->detector));
 +	assert(fireRedDialogueInspect(&fixture->detector) ==
 +			FIRERED_DIALOGUE_TERMINAL_WAIT);
 +	fireRedDialogueConsumeTerminal(&fixture->detector);
@@ -3477,6 +4498,37 @@ index 0000000..c0b87e3
 +	setOrdinary(fixture, 2);
 +	assert(fireRedDialogueInspect(&fixture->detector) ==
 +			FIRERED_DIALOGUE_PAGE_WAIT);
++}
++
++static void testBenignTerminalIsManual(struct Fixture* fixture) {
++	setOrdinary(fixture, 0);
++	write8(fixture->rom, ROM_BASE, fixture->script + 1U, 0x29);
++	write8(fixture->rom, ROM_BASE, fixture->script + 4U, 0x02);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_PRINTING);
++	assert(!fireRedDialogueCanAutoAdvanceTerminal(&fixture->detector));
++
++	setHiddenTerminal(fixture);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_TERMINAL_PENDING);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_MODE, 1);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_TERMINAL_PENDING);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_MODE, 2);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_NATIVE,
++			fixture->profile->waitAorB | 1U);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_SCRIPT, fixture->script + 1U);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_TERMINAL_WAIT);
++	assert(!fireRedDialogueCanAutoAdvanceTerminal(&fixture->detector));
++
++	/* The public consume operation is hardened against an accidental scheduler
++	 * call: only a fully safe terminal can be consumed synthetically. */
++	fireRedDialogueConsumeTerminal(&fixture->detector);
++	assert(fixture->detector.sessionArmed);
++	assert(fixture->detector.lastState == FIRERED_DIALOGUE_TERMINAL_WAIT);
++	fireRedDialogueReset(&fixture->detector);
++	assert(!fixture->detector.sessionArmed);
 +}
 +
 +static void testTerminalFailClosed(struct Fixture* fixture) {
@@ -3494,6 +4546,32 @@ index 0000000..c0b87e3
 +	setHiddenTerminal(fixture);
 +	write32(fixture->iwram, IWRAM_BASE, CONTEXT_NATIVE,
 +			fixture->profile->waitAorB | 1U);
++	assertBlocked(fixture);
++
++	/* A different allowlisted message cannot inherit the armed message's tail
++	 * verdict at either the hidden or final terminal stage. */
++	setOrdinary(fixture, 0);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_PRINTING);
++	setHiddenTerminal(fixture);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_SCRIPT,
++			fixture->profile->safeWaits[0]);
++	assertBlocked(fixture);
++
++	setOrdinary(fixture, 0);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_PRINTING);
++	setHiddenTerminal(fixture);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_TERMINAL_PENDING);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_MODE, 1);
++	assert(fireRedDialogueInspect(&fixture->detector) ==
++			FIRERED_DIALOGUE_TERMINAL_PENDING);
++	write8(fixture->iwram, IWRAM_BASE, CONTEXT_MODE, 2);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_NATIVE,
++			fixture->profile->waitAorB | 1U);
++	write32(fixture->iwram, IWRAM_BASE, CONTEXT_SCRIPT,
++			fixture->profile->safeWaits[0] + 1U);
 +	assertBlocked(fixture);
 +
 +	/* Skipping a required progression stage disarms the detector. */
@@ -3544,8 +4622,13 @@ index 0000000..c0b87e3
 +		struct Fixture fixture;
 +		initFixture(&fixture, &profiles[revision]);
 +		testAllPrinterStates(&fixture);
++		testExactMsgboxWaits(&fixture);
++		testBenignContinuations(&fixture);
++		testControlFlowProof(&fixture);
++		testTailClassificationCache(&fixture);
 +		testEveryOrdinaryGuard(&fixture);
 +		testTerminalSequence(&fixture);
++		testBenignTerminalIsManual(&fixture);
 +		testTerminalFailClosed(&fixture);
 +		deinitFixture(&fixture);
 +	}
@@ -3553,10 +4636,10 @@ index 0000000..c0b87e3
 +}
 diff --git a/tests/libretro_multi_support_test.c b/tests/libretro_multi_support_test.c
 new file mode 100644
-index 0000000..cc75d0d
+index 0000000..40c5180
 --- /dev/null
 +++ b/tests/libretro_multi_support_test.c
-@@ -0,0 +1,350 @@
+@@ -0,0 +1,553 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -3597,6 +4680,152 @@ index 0000000..cc75d0d
 +	assert(layout.placement[0].x == 0 && layout.placement[0].y == 0);
 +	assert(layout.placement[1].x == 240 && layout.placement[1].y == 0);
 +	assert(layout.placement[2].x == 120 && layout.placement[2].y == 160);
++}
++
++static void testScreenOrderParsing(void) {
++	static const struct {
++		const char* value;
++		enum MultiScreenOrder order;
++	} valid[] = {
++		{ "P1-P2-P3", MULTI_SCREEN_ORDER_P1_P2_P3 },
++		{ "P1-P3-P2", MULTI_SCREEN_ORDER_P1_P3_P2 },
++		{ "P2-P1-P3", MULTI_SCREEN_ORDER_P2_P1_P3 },
++		{ "P2-P3-P1", MULTI_SCREEN_ORDER_P2_P3_P1 },
++		{ "P3-P1-P2", MULTI_SCREEN_ORDER_P3_P1_P2 },
++		{ "P3-P2-P1", MULTI_SCREEN_ORDER_P3_P2_P1 },
++	};
++	for (size_t i = 0; i < sizeof(valid) / sizeof(*valid); ++i) {
++		assert(multiScreenOrderParse(valid[i].value) == valid[i].order);
++	}
++
++	static const char* invalid[] = {
++		"", "P1-P2", "P1-P2-P3-P4", "P1-P1-P2", "P0-P1-P2",
++		"p1-p2-p3", "P1/P2/P3", "P1, P2, P3", " P1-P2-P3", "P1-P2-P3 ",
++	};
++	assert(multiScreenOrderParse(NULL) == MULTI_SCREEN_ORDER_DEFAULT);
++	for (size_t i = 0; i < sizeof(invalid) / sizeof(*invalid); ++i) {
++		assert(multiScreenOrderParse(invalid[i]) == MULTI_SCREEN_ORDER_DEFAULT);
++	}
++}
++
++static void testScreenOrderResolution(void) {
++	static const unsigned expectedThree[MULTI_SCREEN_ORDER_COUNT][3] = {
++		{ 0, 1, 2 },
++		{ 0, 2, 1 },
++		{ 1, 0, 2 },
++		{ 1, 2, 0 },
++		{ 2, 0, 1 },
++		{ 2, 1, 0 },
++	};
++	static const unsigned expectedTwo[MULTI_SCREEN_ORDER_COUNT][2] = {
++		{ 0, 1 },
++		{ 0, 1 },
++		{ 1, 0 },
++		{ 1, 0 },
++		{ 0, 1 },
++		{ 1, 0 },
++	};
++
++	unsigned playerAtSlot[MULTI_MAX_INSTANCES];
++	assert(!multiScreenOrderResolve(MULTI_SCREEN_ORDER_DEFAULT, 0, playerAtSlot));
++	assert(!multiScreenOrderResolve(MULTI_SCREEN_ORDER_DEFAULT,
++			MULTI_MAX_INSTANCES + 1, playerAtSlot));
++	assert(!multiScreenOrderResolve(MULTI_SCREEN_ORDER_DEFAULT, 1, NULL));
++	assert(!multiScreenOrderResolve((enum MultiScreenOrder) -1, 3, playerAtSlot));
++	assert(!multiScreenOrderResolve(MULTI_SCREEN_ORDER_COUNT, 3, playerAtSlot));
++
++	for (unsigned order = 0; order < MULTI_SCREEN_ORDER_COUNT; ++order) {
++		assert(multiScreenOrderResolve((enum MultiScreenOrder) order, 1, playerAtSlot));
++		assert(playerAtSlot[0] == 0);
++
++		assert(multiScreenOrderResolve((enum MultiScreenOrder) order, 2, playerAtSlot));
++		assert(memcmp(playerAtSlot, expectedTwo[order],
++				2 * sizeof(*playerAtSlot)) == 0);
++
++		assert(multiScreenOrderResolve((enum MultiScreenOrder) order, 3, playerAtSlot));
++		assert(memcmp(playerAtSlot, expectedThree[order],
++				3 * sizeof(*playerAtSlot)) == 0);
++
++		for (unsigned count = 1; count <= MULTI_MAX_INSTANCES; ++count) {
++			bool seen[MULTI_MAX_INSTANCES] = { false };
++			assert(multiScreenOrderResolve((enum MultiScreenOrder) order,
++					count, playerAtSlot));
++			for (unsigned slot = 0; slot < count; ++slot) {
++				assert(playerAtSlot[slot] < count);
++				assert(!seen[playerAtSlot[slot]]);
++				seen[playerAtSlot[slot]] = true;
++			}
++			for (unsigned player = 0; player < count; ++player) {
++				assert(seen[player]);
++			}
++		}
++	}
++}
++
++static void testScreenOrderComposition(void) {
++	enum { SOURCE_STRIDE = 256, DESTINATION_PIXELS = 480 * 320 };
++	uint16_t sources[MULTI_MAX_INSTANCES][SOURCE_STRIDE * MULTI_VIDEO_HEIGHT];
++	uint16_t destination[DESTINATION_PIXELS];
++	const void* sourcePointers[MULTI_MAX_INSTANCES] = {
++		sources[0], sources[1], sources[2],
++	};
++	const uint16_t colors[MULTI_MAX_INSTANCES] = { 0x1111, 0x2222, 0x3333 };
++
++	for (unsigned player = 0; player < MULTI_MAX_INSTANCES; ++player) {
++		for (size_t pixel = 0;
++				pixel < SOURCE_STRIDE * MULTI_VIDEO_HEIGHT; ++pixel) {
++			sources[player][pixel] = colors[player];
++		}
++	}
++
++	for (unsigned order = 0; order < MULTI_SCREEN_ORDER_COUNT; ++order) {
++		struct MultiLayout layout;
++		unsigned playerAtSlot[MULTI_MAX_INSTANCES];
++		assert(multiLayoutForCount(3, &layout));
++		assert(multiScreenOrderResolve((enum MultiScreenOrder) order, 3,
++				playerAtSlot));
++		for (size_t pixel = 0; pixel < DESTINATION_PIXELS; ++pixel) {
++			destination[pixel] = 0x7777;
++		}
++		assert(multiComposeFrames(destination, DESTINATION_PIXELS,
++				sizeof(*destination), sourcePointers, SOURCE_STRIDE, 3,
++				&layout, playerAtSlot));
++
++		for (unsigned y = 0; y < layout.height; ++y) {
++			for (unsigned x = 0; x < layout.width; ++x) {
++				uint16_t expected = 0x7777;
++				for (unsigned slot = 0; slot < 3; ++slot) {
++					const struct MultiPlacement* placement = &layout.placement[slot];
++					if (x >= placement->x && x < placement->x + MULTI_VIDEO_WIDTH &&
++							y >= placement->y && y < placement->y + MULTI_VIDEO_HEIGHT) {
++						expected = colors[playerAtSlot[slot]];
++						break;
++					}
++				}
++				assert(destination[y * layout.width + x] == expected);
++			}
++		}
++	}
++
++	struct MultiLayout layout;
++	unsigned playerAtSlot[MULTI_MAX_INSTANCES];
++	assert(multiLayoutForCount(2, &layout));
++	assert(multiScreenOrderResolve(MULTI_SCREEN_ORDER_P2_P3_P1, 2,
++			playerAtSlot));
++	memset(destination, 0, sizeof(destination));
++	assert(multiComposeFrames(destination, DESTINATION_PIXELS,
++			sizeof(*destination), sourcePointers, SOURCE_STRIDE, 2,
++			&layout, playerAtSlot));
++	assert(destination[0] == colors[1]);
++	assert(destination[MULTI_VIDEO_WIDTH] == colors[0]);
++
++	assert(!multiComposeFrames(NULL, DESTINATION_PIXELS, sizeof(*destination),
++			sourcePointers, SOURCE_STRIDE, 2, &layout, playerAtSlot));
++	assert(!multiComposeFrames(destination, DESTINATION_PIXELS, 0,
++			sourcePointers, SOURCE_STRIDE, 2, &layout, playerAtSlot));
++	assert(!multiComposeFrames(destination, DESTINATION_PIXELS,
++			sizeof(*destination), sourcePointers, MULTI_VIDEO_WIDTH - 1, 2,
++			&layout, playerAtSlot));
 +}
 +
 +static void testSpeedTargetParsing(void) {
@@ -3777,6 +5006,59 @@ index 0000000..cc75d0d
 +	assert(multiDialogueHandleL2(&state, true, true) == MULTI_DIALOGUE_TOGGLE_ENABLED);
 +}
 +
++static void testDialogueAdvanceInputGuard(void) {
++	const uint16_t keyA = 1U << 0;
++	const uint16_t keyB = 1U << 1;
++	const uint16_t keyRight = 1U << 4;
++	const uint16_t advanceMask = keyA | keyB;
++	struct MultiDialogueInputGuard guard;
++	uint16_t keys = 0;
++
++	multiDialogueInputGuardInit(&guard);
++	assert(!guard.releasePending && !guard.advanceLockout);
++	assert(!multiDialogueInputPrepare(&guard, keyA | keyRight,
++			advanceMask, &keys));
++	assert(keys == (keyA | keyRight));
++
++	/* A physical or synthetic press earns exactly one forced released frame. */
++	multiDialogueInputAdvanced(&guard);
++	assert(guard.releasePending && guard.advanceLockout);
++	assert(multiDialogueInputPrepare(&guard, keyA | keyRight,
++			advanceMask, &keys));
++	assert(keys == keyRight);
++	assert(!guard.releasePending && guard.advanceLockout);
++
++	/* A held A, an A-to-B change, and A+B are masked without requesting more
++	 * 1x release frames. The non-dialogue buttons continue to pass through. */
++	for (unsigned tick = 0; tick < 32; ++tick) {
++		assert(!multiDialogueInputPrepare(&guard, keyA | keyRight,
++				advanceMask, &keys));
++		assert(keys == keyRight);
++	}
++	assert(!multiDialogueInputPrepare(&guard, keyB | keyRight,
++			advanceMask, &keys));
++	assert(keys == keyRight);
++	assert(!multiDialogueInputPrepare(&guard, keyA | keyB | keyRight,
++			advanceMask, &keys));
++	assert(keys == keyRight);
++
++	/* Both buttons up clears the lockout; a later press is a new edge. */
++	assert(!multiDialogueInputPrepare(&guard, keyRight,
++			advanceMask, &keys));
++	assert(keys == keyRight && !guard.advanceLockout);
++	assert(!multiDialogueInputPrepare(&guard, keyB | keyRight,
++			advanceMask, &keys));
++	assert(keys == (keyB | keyRight));
++
++	/* Defensive null handling never alters the caller's keys. */
++	keys = 0;
++	assert(!multiDialogueInputPrepare(NULL, keyA, advanceMask, &keys));
++	assert(keys == keyA);
++	assert(!multiDialogueInputPrepare(&guard, keyA, advanceMask, NULL));
++	multiDialogueInputGuardInit(NULL);
++	multiDialogueInputAdvanced(NULL);
++}
++
 +static void testAudioRoutes(void) {
 +	assert(multiAudioParseMode(NULL) == MULTI_AUDIO_PLAYER_1);
 +	assert(multiAudioParseMode("Player 1") == MULTI_AUDIO_PLAYER_1);
@@ -3896,11 +5178,15 @@ index 0000000..cc75d0d
 +
 +int main(void) {
 +	testLayouts();
++	testScreenOrderParsing();
++	testScreenOrderResolution();
++	testScreenOrderComposition();
 +	testSpeedTargetParsing();
 +	testEverySpeedSchedule();
 +	testSpeedStateAndR2Edges();
 +	testIndependentSpeedStates();
 +	testDialogueOptionsAndL2Edges();
++	testDialogueAdvanceInputGuard();
 +	testAudioRoutes();
 +	testExactAudioClock();
 +	testBoundedAudioFifo();

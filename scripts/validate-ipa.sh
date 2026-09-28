@@ -213,12 +213,14 @@ if [ "$(uname -s)" = "Darwin" ]; then
     fail "mGBA Multi contains the removed shared speed control"
   fi
   for required_core_string in \
+    mgba_multi_screen_order \
     mgba_multi_audio \
     mgba_multi_speed_p1 \
     mgba_multi_speed_p2 \
     mgba_multi_speed_p3 \
     mgba_multi_dialogue_speed \
     mgba_multi_dialogue_auto_advance \
+    'Screen order (reading order); P1-P2-P3|P1-P3-P2|P2-P1-P3|P2-P3-P1|P3-P1-P2|P3-P2-P1' \
     'Audio output; Player 1|Player 2|Player 3|Disabled' \
     'FireRed dialogue speed (L2 toggle)' \
     'FireRed dialogue auto-advance; Enabled|Disabled' \
