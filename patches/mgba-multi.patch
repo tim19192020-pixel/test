@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 9d528e7..c227628 100644
+index 9d528e7..e2774d1 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -69,6 +69,7 @@ if(NOT LIBMGBA_ONLY)
@@ -47,7 +47,7 @@ index 9d528e7..c227628 100644
  		set(CMAKE_OSX_DEPLOYMENT_TARGET "10.6")
  	endif()
  	# Not supported until Xcode 9
-@@ -1025,11 +1036,40 @@ if(BUILD_PYTHON)
+@@ -1025,11 +1036,42 @@ if(BUILD_PYTHON)
  	add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/src/platform/python ${CMAKE_CURRENT_BINARY_DIR}/python)
  endif()
  
@@ -70,12 +70,14 @@ index 9d528e7..c227628 100644
 +			${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro/libretro_multi.c
 +			${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro/libretro_multi_support.c
 +			${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro/libretro_firered_dialogue.c
++			${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro/libretro_firered_iv.c
++			${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro/libretro_iv_overlay.c
 +			${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro/libretro-audio.c
 +			${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro/libretro-vfs.c)
 +	else()
 +		set(LIBRETRO_TARGET ${BINARY_NAME}_libretro)
 +		file(GLOB RETRO_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro/*.c)
-+		list(FILTER RETRO_SRC EXCLUDE REGEX "/libretro_(multi(_support)?|firered_dialogue)\\.c$")
++		list(FILTER RETRO_SRC EXCLUDE REGEX "/libretro_(multi(_support)?|firered_(dialogue|iv)|iv_overlay)\\.c$")
 +	endif()
  	set(LIBRETRO_CORE_SRC ${CORE_SRC})
  	list(APPEND LIBRETRO_CORE_SRC ${VFS_SRC})
@@ -90,7 +92,7 @@ index 9d528e7..c227628 100644
  	list(FILTER LIBRETRO_CORE_SRC EXCLUDE REGEX "/util/(audio-resampler|interpolator)\\.c$")
  	if(CMAKE_TRY_COMPILE_TARGET_TYPE STREQUAL "STATIC_LIBRARY" AND NOT APPLE)
  		# Link-based function probes always succeed under static try-compile,
-@@ -1086,33 +1126,37 @@ if(BUILD_LIBRETRO)
+@@ -1086,33 +1128,37 @@ if(BUILD_LIBRETRO)
  		list(APPEND LIBRETRO_EXTRA_DEFINES HAVE_NO_LANGEXTRA)
  	endif()
  	if(LIBRETRO_STATIC)
@@ -141,7 +143,7 @@ index 9d528e7..c227628 100644
  	endif()
  endif()
  
-@@ -1467,6 +1511,7 @@ if(NOT QUIET AND NOT LIBMGBA_ONLY)
+@@ -1467,6 +1513,7 @@ if(NOT QUIET AND NOT LIBMGBA_ONLY)
  	message(STATUS "	Video test suite: ${BUILD_CINEMA}")
  	message(STATUS "Cores:")
  	message(STATUS "	Libretro core: ${BUILD_LIBRETRO}")
@@ -151,11 +153,11 @@ index 9d528e7..c227628 100644
  	message(STATUS "	Shared: ${BUILD_SHARED}")
 diff --git a/README_MULTI_LIBRETRO.md b/README_MULTI_LIBRETRO.md
 new file mode 100644
-index 0000000..10c14ae
+index 0000000..d768f21
 --- /dev/null
 +++ b/README_MULTI_LIBRETRO.md
-@@ -0,0 +1,178 @@
-+# mGBA Multi 0.3.1
+@@ -0,0 +1,215 @@
++# mGBA Multi 0.3.2
 +
 +This is a deliberately small, linkless libretro frontend built directly on
 +upstream mGBA. It runs one selected GBA ROM in one, two, or three independent
@@ -164,8 +166,9 @@ index 0000000..10c14ae
 +## Baseline contract
 +
 +- Controller ports 1, 2, and 3 always control Players 1, 2, and 3.
-+- Controller port, execution lane, audio/speed/dialogue state, and save slice
-+  use the same permanent player index. Screen position is presentation-only.
++- Controller port, execution lane, audio/speed/dialogue/IV-checker state, and
++  save slice use the same permanent player index. Screen position is
++  presentation-only.
 +- One instance is `240x160`; two are `480x160` side by side; three are
 +  `480x320`, with two screens above and one centered below. `Screen order
 +  (reading order)` offers all six P1/P2/P3 permutations and can be changed
@@ -177,7 +180,7 @@ index 0000000..10c14ae
 +  has 128 KiB plus a canonical 16-byte RTC trailer, so changing the visible
 +  count never renames or shifts a player's save. The frontend mirrors mGBA's
 +  save-type-specific RTC location (8, 64, or 128 KiB) into that fixed trailer.
-+- Version 0.3.1 intentionally has no link cable, subsystems, savestates,
++- Version 0.3.2 intentionally has no link cable, subsystems, savestates,
 +  user-configurable frameskip, sensors, or background file writes.
 +- `Audio output` selects Player 1 (the default), Player 2, or Player 3, or
 +  disables audible output. Selecting a player that is not active produces
@@ -221,6 +224,25 @@ index 0000000..10c14ae
 +frames and returns immediately to normal scheduling when any guard stops
 +matching.
 +
++## FireRed party IV checker
++
++X on each player's controller independently opens or closes a party IV table
++for that logical player. Multiple tables may be visible at once. Each table
++shows all six party slots, level, nickname, and IVs in conventional HP, Attack,
++Defense, Special Attack, Special Defense, and Speed order. It moves with the
++logical player when screen order changes and starts hidden on every content
++load.
++
++The checker supports the same exact FireRed USA 1.0 and 1.1 hashes listed
++above. It decrypts the game's Gen III party records, validates each checksum,
++and labels empty or malformed records instead of guessing. Unsupported ROMs
++remain hidden and report that the feature is unavailable. A visible checker
++copies one bounded snapshot on that instance's existing owner lane every 15
++displayed frames and draws directly into that player's RGB565 viewport after
++composition. A hidden checker performs no memory reads or rendering. It adds
++no thread, queue, allocation, file I/O, or save data, and it never writes to
++emulated memory.
++
 +## Execution model
 +
 +One-instance mode uses the same direct `runFrame()` path as the stock core.
@@ -244,7 +266,9 @@ index 0000000..10c14ae
 +sub-frame lockstep. Independent linkless instances do not have that dependency.
 +
 +Workers never invoke libretro callbacks or perform file I/O. They only apply a
-+copied key mask and execute their bounded frame count (or an explicit reset).
++copied key mask, execute their bounded frame count (or an explicit reset), and
++when requested copy the checksum-validated IV snapshot before reaching the
++same barrier.
 +tvOS chooses the physical A12 cores; the frontend does not use hard CPU
 +affinity or force a QoS class. Instances share one immutable ROM backing through
 +independent VFile cursors; mGBA's built-in copy-on-write path gives an instance
@@ -298,8 +322,9 @@ index 0000000..10c14ae
 +```
 +
 +The small host-side tests cover every screen permutation, compositing identity,
-+held-input release behavior, speed/audio/save helpers, and both FireRed detector
-+profiles. They can be run with:
++held-input release behavior, speed/audio/save helpers, both FireRed detector
++profiles, all 24 Gen III encrypted-party permutations, and bounded RGB565 IV
++overlay placement. They can be run with:
 +
 +```sh
 +cc -std=c11 -Wall -Wextra -Werror \
@@ -323,6 +348,20 @@ index 0000000..10c14ae
 +  src/platform/libretro/libretro_firered_dialogue.c \
 +  -o firered-dialogue-test
 +./firered-dialogue-test
++
++cc -std=c11 -Wall -Wextra -Werror -pedantic \
++  -Isrc/platform/libretro \
++  tests/libretro_firered_iv_test.c \
++  src/platform/libretro/libretro_firered_iv.c \
++  -o firered-iv-test
++./firered-iv-test
++
++cc -std=c11 -Wall -Wextra -Werror -pedantic \
++  -Isrc/platform/libretro \
++  tests/libretro_iv_overlay_test.c \
++  src/platform/libretro/libretro_iv_overlay.c \
++  -o iv-overlay-test
++./iv-overlay-test
 +```
 +
 +## Hardware acceptance
@@ -1428,12 +1467,678 @@ index 0000000..6e2d7ce
 +void fireRedDialogueConsumeTerminal(struct FireRedDialogueDetector* detector);
 +
 +#endif
+diff --git a/src/platform/libretro/libretro_firered_iv.c b/src/platform/libretro/libretro_firered_iv.c
+new file mode 100644
+index 0000000..e016394
+--- /dev/null
++++ b/src/platform/libretro/libretro_firered_iv.c
+@@ -0,0 +1,241 @@
++/* Copyright (c) 2026 mGBA contributors
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++#include "libretro_firered_iv.h"
++
++#include <string.h>
++
++#define FIRERED_EWRAM_BASE 0x02000000U
++#define FIRERED_PARTY_COUNT_ADDRESS 0x02024029U
++#define FIRERED_PARTY_ADDRESS 0x02024284U
++#define FIRERED_PARTY_RECORD_SIZE 100U
++
++#define FIRERED_PERSONALITY_OFFSET 0U
++#define FIRERED_OT_ID_OFFSET 4U
++#define FIRERED_NICKNAME_OFFSET 8U
++#define FIRERED_NICKNAME_LENGTH 10U
++#define FIRERED_LANGUAGE_OFFSET 18U
++#define FIRERED_FLAGS_OFFSET 19U
++#define FIRERED_CHECKSUM_OFFSET 28U
++#define FIRERED_SECURE_OFFSET 32U
++#define FIRERED_SECURE_SIZE 48U
++#define FIRERED_LEVEL_OFFSET 84U
++
++#define FIRERED_FLAG_BAD_EGG 0x01U
++#define FIRERED_FLAG_HAS_SPECIES 0x02U
++#define FIRERED_FLAG_EGG 0x04U
++#define FIRERED_SUBSTRUCT_SIZE 12U
++#define FIRERED_GROWTH 0U
++#define FIRERED_MISC 3U
++
++/* Physical position of each logical substruct for personality % 24. */
++static const uint8_t sSubstructOffset[24][4] = {
++	{ 0, 1, 2, 3 }, { 0, 1, 3, 2 }, { 0, 2, 1, 3 },
++	{ 0, 3, 1, 2 }, { 0, 2, 3, 1 }, { 0, 3, 2, 1 },
++	{ 1, 0, 2, 3 }, { 1, 0, 3, 2 }, { 2, 0, 1, 3 },
++	{ 3, 0, 1, 2 }, { 2, 0, 3, 1 }, { 3, 0, 2, 1 },
++	{ 1, 2, 0, 3 }, { 1, 3, 0, 2 }, { 2, 1, 0, 3 },
++	{ 3, 1, 0, 2 }, { 2, 3, 0, 1 }, { 3, 2, 0, 1 },
++	{ 1, 2, 3, 0 }, { 1, 3, 2, 0 }, { 2, 1, 3, 0 },
++	{ 3, 1, 2, 0 }, { 2, 3, 1, 0 }, { 3, 2, 1, 0 },
++};
++
++static uint16_t _read16(const uint8_t* data) {
++	return (uint16_t) ((uint16_t) data[0] | (uint16_t) data[1] << 8);
++}
++
++static uint32_t _read32(const uint8_t* data) {
++	return (uint32_t) data[0] |
++			(uint32_t) data[1] << 8 |
++			(uint32_t) data[2] << 16 |
++			(uint32_t) data[3] << 24;
++}
++
++static void _write32(uint8_t* data, uint32_t value) {
++	data[0] = (uint8_t) value;
++	data[1] = (uint8_t) (value >> 8);
++	data[2] = (uint8_t) (value >> 16);
++	data[3] = (uint8_t) (value >> 24);
++}
++
++static bool _range(size_t size, size_t offset, size_t length) {
++	return offset <= size && length <= size - offset;
++}
++
++static unsigned _physicalSubstruct(unsigned permutation, unsigned logical) {
++	return sSubstructOffset[permutation][logical];
++}
++
++static char _nicknameCharacter(uint8_t character) {
++	if (character >= 0xA1U && character <= 0xAAU) {
++		return (char) ('0' + character - 0xA1U);
++	}
++	if (character >= 0xBBU && character <= 0xD4U) {
++		return (char) ('A' + character - 0xBBU);
++	}
++	if (character >= 0xD5U && character <= 0xEEU) {
++		return (char) ('a' + character - 0xD5U);
++	}
++
++	switch (character) {
++	case 0x00: return ' ';
++	case 0x01: case 0x02: case 0x03: return 'A';
++	case 0x04: return 'C';
++	case 0x05: case 0x06: case 0x07: case 0x08: return 'E';
++	case 0x09: case 0x0B: case 0x0C: case 0x5A: return 'I';
++	case 0x0D: case 0x0E: case 0x0F: case 0x10: return 'O';
++	case 0x11: case 0x12: case 0x13: return 'U';
++	case 0x14: return 'N';
++	case 0x15: return 's';
++	case 0x16: case 0x17: case 0x68: return 'a';
++	case 0x19: return 'c';
++	case 0x1A: case 0x1B: case 0x1C: case 0x1D: return 'e';
++	case 0x1E: case 0x20: case 0x21: case 0x6F: return 'i';
++	case 0x22: case 0x23: case 0x24: case 0x25: return 'o';
++	case 0x26: case 0x27: case 0x28: return 'u';
++	case 0x29: return 'n';
++	case 0x2D: return '&';
++	case 0x2E: return '+';
++	case 0x35: return '=';
++	case 0x36: return ';';
++	case 0x5B: return '%';
++	case 0x5C: return '(';
++	case 0x5D: return ')';
++	case 0x85: return '<';
++	case 0x86: return '>';
++	case 0xAB: return '!';
++	case 0xAC: return '?';
++	case 0xAD: return '.';
++	case 0xAE: return '-';
++	case 0xB4: return '\'';
++	case 0xB5: return 'M';
++	case 0xB6: return 'F';
++	case 0xB8: return ',';
++	case 0xBA: return '/';
++	case 0xF0: return ':';
++	case 0xF1: return 'A';
++	case 0xF2: return 'O';
++	case 0xF3: return 'U';
++	case 0xF4: return 'a';
++	case 0xF5: return 'o';
++	case 0xF6: return 'u';
++	default: return '?';
++	}
++}
++
++static bool _westernLanguage(uint8_t language) {
++	return language == 2U || language == 3U || language == 4U ||
++			language == 5U || language == 7U;
++}
++
++static void _readNickname(const uint8_t* record,
++		char nickname[FIRERED_IV_NICKNAME_CAPACITY]) {
++	unsigned output = 0;
++	bool western = _westernLanguage(record[FIRERED_LANGUAGE_OFFSET]);
++	for (unsigned i = 0; i < FIRERED_NICKNAME_LENGTH; ++i) {
++		uint8_t character = record[FIRERED_NICKNAME_OFFSET + i];
++		if (character == 0xFFU) {
++			break;
++		}
++		/* Japanese glyphs share byte values with unrelated Western glyphs. A
++		 * single-byte ASCII overlay cannot transliterate them faithfully. */
++		nickname[output++] = western ? _nicknameCharacter(character) : '?';
++	}
++	nickname[output] = '\0';
++}
++
++static bool _validSpecies(uint16_t species) {
++	return species >= 1U && species <= 411U &&
++			(species < 252U || species > 276U);
++}
++
++static void _setCorrupt(struct FireRedIvPokemon* pokemon) {
++	memset(pokemon, 0, sizeof(*pokemon));
++	pokemon->status = FIRERED_IV_CORRUPT;
++}
++
++static void _readPokemon(const uint8_t* record,
++		struct FireRedIvPokemon* pokemon) {
++	uint8_t decrypted[FIRERED_SECURE_SIZE];
++	uint32_t personality = _read32(record + FIRERED_PERSONALITY_OFFSET);
++	uint32_t key = personality ^ _read32(record + FIRERED_OT_ID_OFFSET);
++	uint16_t checksum = 0;
++
++	if (!(record[FIRERED_FLAGS_OFFSET] & FIRERED_FLAG_HAS_SPECIES)) {
++		return;
++	}
++	_readNickname(record, pokemon->nickname);
++	pokemon->level = record[FIRERED_LEVEL_OFFSET];
++	for (unsigned offset = 0; offset < FIRERED_SECURE_SIZE; offset += 4) {
++		_write32(decrypted + offset,
++				_read32(record + FIRERED_SECURE_OFFSET + offset) ^ key);
++	}
++	for (unsigned offset = 0; offset < FIRERED_SECURE_SIZE; offset += 2) {
++		checksum = (uint16_t) (checksum + _read16(decrypted + offset));
++	}
++	if (checksum != _read16(record + FIRERED_CHECKSUM_OFFSET)) {
++		_setCorrupt(pokemon);
++		return;
++	}
++
++	unsigned permutation = personality % 24U;
++	unsigned growth = _physicalSubstruct(permutation, FIRERED_GROWTH);
++	unsigned misc = _physicalSubstruct(permutation, FIRERED_MISC);
++	if (growth >= 4U || misc >= 4U) {
++		_setCorrupt(pokemon);
++		return;
++	}
++
++	pokemon->species = _read16(decrypted + growth * FIRERED_SUBSTRUCT_SIZE);
++	uint32_t ivWord = _read32(decrypted + misc * FIRERED_SUBSTRUCT_SIZE + 4U);
++	pokemon->ivs[FIRERED_IV_HP] = (uint8_t) (ivWord & 31U);
++	pokemon->ivs[FIRERED_IV_ATK] = (uint8_t) ((ivWord >> 5) & 31U);
++	pokemon->ivs[FIRERED_IV_DEF] = (uint8_t) ((ivWord >> 10) & 31U);
++	pokemon->ivs[FIRERED_IV_SPE] = (uint8_t) ((ivWord >> 15) & 31U);
++	pokemon->ivs[FIRERED_IV_SPA] = (uint8_t) ((ivWord >> 20) & 31U);
++	pokemon->ivs[FIRERED_IV_SPD] = (uint8_t) ((ivWord >> 25) & 31U);
++
++	bool outerEgg = (record[FIRERED_FLAGS_OFFSET] & FIRERED_FLAG_EGG) != 0;
++	bool innerEgg = (ivWord & (UINT32_C(1) << 30)) != 0;
++	if ((record[FIRERED_FLAGS_OFFSET] & FIRERED_FLAG_BAD_EGG) ||
++			outerEgg != innerEgg || !_validSpecies(pokemon->species) ||
++			(!outerEgg && (pokemon->level < 1U || pokemon->level > 100U))) {
++		_setCorrupt(pokemon);
++	} else if (outerEgg) {
++		pokemon->status = FIRERED_IV_EGG;
++	} else {
++		pokemon->status = FIRERED_IV_VALID;
++	}
++}
++
++bool fireRedIvReadParty(bool supported, const uint8_t* ewram, size_t ewramSize,
++		struct FireRedIvParty* party) {
++	if (!party) {
++		return false;
++	}
++	memset(party, 0, sizeof(*party));
++	if (!supported || !ewram) {
++		return false;
++	}
++
++	size_t countOffset = FIRERED_PARTY_COUNT_ADDRESS - FIRERED_EWRAM_BASE;
++	size_t partyOffset = FIRERED_PARTY_ADDRESS - FIRERED_EWRAM_BASE;
++	if (!_range(ewramSize, countOffset, 1U) ||
++			!_range(ewramSize, partyOffset,
++				FIRERED_IV_PARTY_CAPACITY * FIRERED_PARTY_RECORD_SIZE)) {
++		return false;
++	}
++
++	unsigned count = ewram[countOffset];
++	if (count > FIRERED_IV_PARTY_CAPACITY) {
++		return false;
++	}
++	party->partyCount = count;
++	for (unsigned i = 0; i < count; ++i) {
++		_readPokemon(ewram + partyOffset + i * FIRERED_PARTY_RECORD_SIZE,
++				&party->pokemon[i]);
++	}
++	return true;
++}
+diff --git a/src/platform/libretro/libretro_firered_iv.h b/src/platform/libretro/libretro_firered_iv.h
+new file mode 100644
+index 0000000..1fa0e32
+--- /dev/null
++++ b/src/platform/libretro/libretro_firered_iv.h
+@@ -0,0 +1,53 @@
++/* Copyright (c) 2026 mGBA contributors
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++#ifndef LIBRETRO_FIRERED_IV_H
++#define LIBRETRO_FIRERED_IV_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#define FIRERED_IV_PARTY_CAPACITY 6
++#define FIRERED_IV_NICKNAME_CAPACITY 11
++
++enum FireRedIvStatus {
++	FIRERED_IV_EMPTY,
++	FIRERED_IV_VALID,
++	FIRERED_IV_EGG,
++	FIRERED_IV_CORRUPT,
++};
++
++enum FireRedIvStat {
++	FIRERED_IV_HP,
++	FIRERED_IV_ATK,
++	FIRERED_IV_DEF,
++	FIRERED_IV_SPA,
++	FIRERED_IV_SPD,
++	FIRERED_IV_SPE,
++	FIRERED_IV_STAT_COUNT,
++};
++
++struct FireRedIvPokemon {
++	enum FireRedIvStatus status;
++	uint16_t species;
++	uint8_t level;
++	uint8_t ivs[FIRERED_IV_STAT_COUNT];
++	char nickname[FIRERED_IV_NICKNAME_CAPACITY];
++};
++
++struct FireRedIvParty {
++	unsigned partyCount;
++	struct FireRedIvPokemon pokemon[FIRERED_IV_PARTY_CAPACITY];
++};
++
++/* Reads a point-in-time party snapshot from borrowed FireRed EWRAM. The
++ * caller owns the exact-ROM gate: no data is inspected unless supported is
++ * true. The function never changes EWRAM and does not retain either pointer.
++ * A false result leaves every output slot empty. */
++bool fireRedIvReadParty(bool supported, const uint8_t* ewram, size_t ewramSize,
++		struct FireRedIvParty* party);
++
++#endif
+diff --git a/src/platform/libretro/libretro_iv_overlay.c b/src/platform/libretro/libretro_iv_overlay.c
+new file mode 100644
+index 0000000..bbb2ee1
+--- /dev/null
++++ b/src/platform/libretro/libretro_iv_overlay.c
+@@ -0,0 +1,322 @@
++/* Copyright (c) 2026 mGBA contributors
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "libretro_iv_overlay.h"
++
++#include <limits.h>
++#include <string.h>
++
++#define PANEL_X 2U
++#define PANEL_Y 2U
++#define PANEL_WIDTH 236U
++#define PANEL_HEIGHT 156U
++#define TEXT_X 7U
++#define TITLE_Y 7U
++#define HEADING_Y 23U
++#define FIRST_ROW_Y 39U
++#define ROW_HEIGHT 18U
++#define FOOTER_Y 147U
++#define LINE_CHARACTERS 34U
++
++#define RGB565_BLACK 0x0000U
++#define RGB565_PANEL 0x0841U
++#define RGB565_TITLE 0x0018U
++#define RGB565_ROW_A 0x1082U
++#define RGB565_ROW_B 0x18C3U
++#define RGB565_WHITE 0xFFFFU
++#define RGB565_GREY 0xAD55U
++#define RGB565_CYAN 0x07FFU
++#define RGB565_YELLOW 0xFFE0U
++#define RGB565_RED 0xF800U
++
++/* Five columns per printable ASCII glyph, with the low seven bits read from
++ * top to bottom. Keeping the bitmap here avoids fonts, I/O, and allocation. */
++static const uint8_t font5x7[96][5] = {
++	{ 0x00, 0x00, 0x00, 0x00, 0x00 }, /*   */
++	{ 0x00, 0x00, 0x5F, 0x00, 0x00 }, /* ! */
++	{ 0x00, 0x07, 0x00, 0x07, 0x00 }, /* " */
++	{ 0x14, 0x7F, 0x14, 0x7F, 0x14 }, /* # */
++	{ 0x24, 0x2A, 0x7F, 0x2A, 0x12 }, /* $ */
++	{ 0x23, 0x13, 0x08, 0x64, 0x62 }, /* % */
++	{ 0x36, 0x49, 0x55, 0x22, 0x50 }, /* & */
++	{ 0x00, 0x05, 0x03, 0x00, 0x00 }, /* ' */
++	{ 0x00, 0x1C, 0x22, 0x41, 0x00 }, /* ( */
++	{ 0x00, 0x41, 0x22, 0x1C, 0x00 }, /* ) */
++	{ 0x14, 0x08, 0x3E, 0x08, 0x14 }, /* * */
++	{ 0x08, 0x08, 0x3E, 0x08, 0x08 }, /* + */
++	{ 0x00, 0x50, 0x30, 0x00, 0x00 }, /* , */
++	{ 0x08, 0x08, 0x08, 0x08, 0x08 }, /* - */
++	{ 0x00, 0x60, 0x60, 0x00, 0x00 }, /* . */
++	{ 0x20, 0x10, 0x08, 0x04, 0x02 }, /* / */
++	{ 0x3E, 0x51, 0x49, 0x45, 0x3E }, /* 0 */
++	{ 0x00, 0x42, 0x7F, 0x40, 0x00 }, /* 1 */
++	{ 0x42, 0x61, 0x51, 0x49, 0x46 }, /* 2 */
++	{ 0x21, 0x41, 0x45, 0x4B, 0x31 }, /* 3 */
++	{ 0x18, 0x14, 0x12, 0x7F, 0x10 }, /* 4 */
++	{ 0x27, 0x45, 0x45, 0x45, 0x39 }, /* 5 */
++	{ 0x3C, 0x4A, 0x49, 0x49, 0x30 }, /* 6 */
++	{ 0x01, 0x71, 0x09, 0x05, 0x03 }, /* 7 */
++	{ 0x36, 0x49, 0x49, 0x49, 0x36 }, /* 8 */
++	{ 0x06, 0x49, 0x49, 0x29, 0x1E }, /* 9 */
++	{ 0x00, 0x36, 0x36, 0x00, 0x00 }, /* : */
++	{ 0x00, 0x56, 0x36, 0x00, 0x00 }, /* ; */
++	{ 0x08, 0x14, 0x22, 0x41, 0x00 }, /* < */
++	{ 0x14, 0x14, 0x14, 0x14, 0x14 }, /* = */
++	{ 0x00, 0x41, 0x22, 0x14, 0x08 }, /* > */
++	{ 0x02, 0x01, 0x51, 0x09, 0x06 }, /* ? */
++	{ 0x32, 0x49, 0x79, 0x41, 0x3E }, /* @ */
++	{ 0x7E, 0x11, 0x11, 0x11, 0x7E }, /* A */
++	{ 0x7F, 0x49, 0x49, 0x49, 0x36 }, /* B */
++	{ 0x3E, 0x41, 0x41, 0x41, 0x22 }, /* C */
++	{ 0x7F, 0x41, 0x41, 0x22, 0x1C }, /* D */
++	{ 0x7F, 0x49, 0x49, 0x49, 0x41 }, /* E */
++	{ 0x7F, 0x09, 0x09, 0x09, 0x01 }, /* F */
++	{ 0x3E, 0x41, 0x49, 0x49, 0x7A }, /* G */
++	{ 0x7F, 0x08, 0x08, 0x08, 0x7F }, /* H */
++	{ 0x00, 0x41, 0x7F, 0x41, 0x00 }, /* I */
++	{ 0x20, 0x40, 0x41, 0x3F, 0x01 }, /* J */
++	{ 0x7F, 0x08, 0x14, 0x22, 0x41 }, /* K */
++	{ 0x7F, 0x40, 0x40, 0x40, 0x40 }, /* L */
++	{ 0x7F, 0x02, 0x0C, 0x02, 0x7F }, /* M */
++	{ 0x7F, 0x04, 0x08, 0x10, 0x7F }, /* N */
++	{ 0x3E, 0x41, 0x41, 0x41, 0x3E }, /* O */
++	{ 0x7F, 0x09, 0x09, 0x09, 0x06 }, /* P */
++	{ 0x3E, 0x41, 0x51, 0x21, 0x5E }, /* Q */
++	{ 0x7F, 0x09, 0x19, 0x29, 0x46 }, /* R */
++	{ 0x46, 0x49, 0x49, 0x49, 0x31 }, /* S */
++	{ 0x01, 0x01, 0x7F, 0x01, 0x01 }, /* T */
++	{ 0x3F, 0x40, 0x40, 0x40, 0x3F }, /* U */
++	{ 0x1F, 0x20, 0x40, 0x20, 0x1F }, /* V */
++	{ 0x3F, 0x40, 0x38, 0x40, 0x3F }, /* W */
++	{ 0x63, 0x14, 0x08, 0x14, 0x63 }, /* X */
++	{ 0x07, 0x08, 0x70, 0x08, 0x07 }, /* Y */
++	{ 0x61, 0x51, 0x49, 0x45, 0x43 }, /* Z */
++	{ 0x00, 0x7F, 0x41, 0x41, 0x00 }, /* [ */
++	{ 0x02, 0x04, 0x08, 0x10, 0x20 }, /* \ */
++	{ 0x00, 0x41, 0x41, 0x7F, 0x00 }, /* ] */
++	{ 0x04, 0x02, 0x01, 0x02, 0x04 }, /* ^ */
++	{ 0x40, 0x40, 0x40, 0x40, 0x40 }, /* _ */
++	{ 0x00, 0x01, 0x02, 0x04, 0x00 }, /* ` */
++	{ 0x20, 0x54, 0x54, 0x54, 0x78 }, /* a */
++	{ 0x7F, 0x48, 0x44, 0x44, 0x38 }, /* b */
++	{ 0x38, 0x44, 0x44, 0x44, 0x20 }, /* c */
++	{ 0x38, 0x44, 0x44, 0x48, 0x7F }, /* d */
++	{ 0x38, 0x54, 0x54, 0x54, 0x18 }, /* e */
++	{ 0x08, 0x7E, 0x09, 0x01, 0x02 }, /* f */
++	{ 0x0C, 0x52, 0x52, 0x52, 0x3E }, /* g */
++	{ 0x7F, 0x08, 0x04, 0x04, 0x78 }, /* h */
++	{ 0x00, 0x44, 0x7D, 0x40, 0x00 }, /* i */
++	{ 0x20, 0x40, 0x44, 0x3D, 0x00 }, /* j */
++	{ 0x7F, 0x10, 0x28, 0x44, 0x00 }, /* k */
++	{ 0x00, 0x41, 0x7F, 0x40, 0x00 }, /* l */
++	{ 0x7C, 0x04, 0x18, 0x04, 0x78 }, /* m */
++	{ 0x7C, 0x08, 0x04, 0x04, 0x78 }, /* n */
++	{ 0x38, 0x44, 0x44, 0x44, 0x38 }, /* o */
++	{ 0x7C, 0x14, 0x14, 0x14, 0x08 }, /* p */
++	{ 0x08, 0x14, 0x14, 0x18, 0x7C }, /* q */
++	{ 0x7C, 0x08, 0x04, 0x04, 0x08 }, /* r */
++	{ 0x48, 0x54, 0x54, 0x54, 0x20 }, /* s */
++	{ 0x04, 0x3F, 0x44, 0x40, 0x20 }, /* t */
++	{ 0x3C, 0x40, 0x40, 0x20, 0x7C }, /* u */
++	{ 0x1C, 0x20, 0x40, 0x20, 0x1C }, /* v */
++	{ 0x3C, 0x40, 0x30, 0x40, 0x3C }, /* w */
++	{ 0x44, 0x28, 0x10, 0x28, 0x44 }, /* x */
++	{ 0x0C, 0x50, 0x50, 0x50, 0x3C }, /* y */
++	{ 0x44, 0x64, 0x54, 0x4C, 0x44 }, /* z */
++	{ 0x00, 0x08, 0x36, 0x41, 0x00 }, /* { */
++	{ 0x00, 0x00, 0x7F, 0x00, 0x00 }, /* | */
++	{ 0x00, 0x41, 0x36, 0x08, 0x00 }, /* } */
++	{ 0x08, 0x04, 0x08, 0x10, 0x08 }, /* ~ */
++	{ 0x00, 0x06, 0x09, 0x09, 0x06 }, /* DEL */
++};
++
++static void fillRect(uint16_t* pixels, size_t stride, unsigned x, unsigned y,
++		unsigned width, unsigned height, uint16_t color) {
++	for (unsigned row = 0; row < height; ++row) {
++		uint16_t* destination = pixels + ((size_t) y + row) * stride + x;
++		for (unsigned column = 0; column < width; ++column) {
++			destination[column] = color;
++		}
++	}
++}
++
++static void drawGlyph(uint16_t* pixels, size_t stride, unsigned x, unsigned y,
++		char character, uint16_t color) {
++	unsigned code = (unsigned char) character;
++	if (code < 0x20U || code > 0x7FU) {
++		code = (unsigned) '?';
++	}
++	const uint8_t* glyph = font5x7[code - 0x20U];
++	for (unsigned column = 0; column < 5; ++column) {
++		uint8_t bits = glyph[column];
++		for (unsigned row = 0; row < 7; ++row) {
++			if (bits & (1U << row)) {
++				pixels[((size_t) y + row) * stride + x + column] = color;
++			}
++		}
++	}
++}
++
++static void drawText(uint16_t* pixels, size_t stride, unsigned x, unsigned y,
++		const char* text, uint16_t color) {
++	for (unsigned i = 0; text[i] && i < LINE_CHARACTERS; ++i) {
++		drawGlyph(pixels, stride, x + i * 6U, y, text[i], color);
++	}
++}
++
++static void clearLine(char line[LINE_CHARACTERS + 1U]) {
++	memset(line, ' ', LINE_CHARACTERS);
++	line[LINE_CHARACTERS] = '\0';
++}
++
++static void putLiteral(char line[LINE_CHARACTERS + 1U], unsigned column,
++		const char* text) {
++	while (*text && column < LINE_CHARACTERS) {
++		line[column++] = *text++;
++	}
++}
++
++static void putUnsignedRight(char line[LINE_CHARACTERS + 1U], unsigned last,
++		unsigned width, unsigned value) {
++	for (unsigned digit = 0; digit < width; ++digit) {
++		line[last - digit] = (char) ('0' + value % 10U);
++		value /= 10U;
++		if (!value) {
++			break;
++		}
++	}
++}
++
++static void putNickname(char line[LINE_CHARACTERS + 1U],
++		const struct FireRedIvPokemon* pokemon) {
++	unsigned copied = 0;
++	for (; copied < 10U && copied < FIRERED_IV_NICKNAME_CAPACITY; ++copied) {
++		unsigned code = (unsigned char) pokemon->nickname[copied];
++		if (!code) {
++			break;
++		}
++		line[6U + copied] = code >= 0x20U && code <= 0x7EU
++				? (char) code : '?';
++	}
++	if (!copied) {
++		putLiteral(line, 6U, "SPECIES");
++		putUnsignedRight(line, 15U, 3U, pokemon->species);
++	}
++}
++
++static uint16_t makePartyLine(char line[LINE_CHARACTERS + 1U], unsigned slot,
++		const struct FireRedIvPokemon* pokemon) {
++	static const unsigned statColumns[FIRERED_IV_STAT_COUNT] = {
++		18U, 21U, 24U, 27U, 30U, 33U,
++	};
++	clearLine(line);
++	line[0] = (char) ('1' + slot);
++
++	switch (pokemon->status) {
++	case FIRERED_IV_EMPTY:
++		putLiteral(line, 6U, "EMPTY");
++		return RGB565_GREY;
++	case FIRERED_IV_EGG:
++		putLiteral(line, 6U, "EGG");
++		for (unsigned stat = 0; stat < FIRERED_IV_STAT_COUNT; ++stat) {
++			putUnsignedRight(line, statColumns[stat], 2U,
++					pokemon->ivs[stat]);
++		}
++		return RGB565_YELLOW;
++	case FIRERED_IV_VALID:
++		putUnsignedRight(line, 4U, 3U, pokemon->level);
++		putNickname(line, pokemon);
++		for (unsigned stat = 0; stat < FIRERED_IV_STAT_COUNT; ++stat) {
++			putUnsignedRight(line, statColumns[stat], 2U, pokemon->ivs[stat]);
++		}
++		return RGB565_WHITE;
++	case FIRERED_IV_CORRUPT:
++	default:
++		putLiteral(line, 6U, "CORRUPT");
++		return RGB565_RED;
++	}
++}
++
++static bool canvasIsValid(size_t pixelCount, size_t stride,
++		unsigned canvasWidth, unsigned canvasHeight,
++		unsigned slotX, unsigned slotY) {
++	if (!canvasWidth || !canvasHeight || stride < canvasWidth) {
++		return false;
++	}
++	if (slotX > canvasWidth ||
++			FIRERED_IV_OVERLAY_SLOT_WIDTH > canvasWidth - slotX ||
++			slotY > canvasHeight ||
++			FIRERED_IV_OVERLAY_SLOT_HEIGHT > canvasHeight - slotY) {
++		return false;
++	}
++	if ((size_t) (canvasHeight - 1U) > SIZE_MAX / stride) {
++		return false;
++	}
++	size_t lastRow = (size_t) (canvasHeight - 1U) * stride;
++	if ((size_t) canvasWidth > SIZE_MAX - lastRow) {
++		return false;
++	}
++	return lastRow + canvasWidth <= pixelCount;
++}
++
++bool fireRedIvOverlayDraw(uint16_t* pixels, size_t pixelCount, size_t stride,
++		unsigned canvasWidth, unsigned canvasHeight,
++		unsigned slotX, unsigned slotY, unsigned logicalPlayer,
++		const struct FireRedIvParty* party) {
++	if (!pixels || !party || logicalPlayer >= 3U ||
++			!canvasIsValid(pixelCount, stride, canvasWidth, canvasHeight,
++				slotX, slotY)) {
++		return false;
++	}
++
++	const unsigned panelX = slotX + PANEL_X;
++	const unsigned panelY = slotY + PANEL_Y;
++	fillRect(pixels, stride, panelX, panelY, PANEL_WIDTH, PANEL_HEIGHT,
++			RGB565_CYAN);
++	fillRect(pixels, stride, panelX + 1U, panelY + 1U,
++			PANEL_WIDTH - 2U, PANEL_HEIGHT - 2U, RGB565_PANEL);
++	fillRect(pixels, stride, panelX + 1U, panelY + 1U,
++			PANEL_WIDTH - 2U, 13U, RGB565_TITLE);
++
++	char line[LINE_CHARACTERS + 1U];
++	clearLine(line);
++	putLiteral(line, 0U, "P1 IV CHECKER        [X] CLOSE");
++	line[1] = (char) ('1' + logicalPlayer);
++	drawText(pixels, stride, slotX + TEXT_X, slotY + TITLE_Y, line,
++			RGB565_CYAN);
++
++	clearLine(line);
++	putLiteral(line, 0U, "S LVL NAME       HP AT DF SA SD SP");
++	drawText(pixels, stride, slotX + TEXT_X, slotY + HEADING_Y, line,
++			RGB565_CYAN);
++
++	static const struct FireRedIvPokemon emptyPokemon = {
++		.status = FIRERED_IV_EMPTY,
++	};
++	static const struct FireRedIvPokemon corruptPokemon = {
++		.status = FIRERED_IV_CORRUPT,
++	};
++	for (unsigned slot = 0; slot < FIRERED_IV_PARTY_CAPACITY; ++slot) {
++		unsigned rowY = slotY + FIRST_ROW_Y + slot * ROW_HEIGHT;
++		fillRect(pixels, stride, panelX + 1U, rowY - 3U,
++				PANEL_WIDTH - 2U, 13U,
++				slot & 1U ? RGB565_ROW_B : RGB565_ROW_A);
++		const struct FireRedIvPokemon* pokemon;
++		if (party->partyCount > FIRERED_IV_PARTY_CAPACITY) {
++			pokemon = &corruptPokemon;
++		} else if (slot >= party->partyCount) {
++			pokemon = &emptyPokemon;
++		} else {
++			pokemon = &party->pokemon[slot];
++		}
++		uint16_t color = makePartyLine(line, slot, pokemon);
++		drawText(pixels, stride, slotX + TEXT_X, rowY, line, color);
++	}
++
++	drawText(pixels, stride, slotX + TEXT_X, slotY + FOOTER_Y,
++			"IV RANGE 0-31", RGB565_GREY);
++	return true;
++}
+diff --git a/src/platform/libretro/libretro_iv_overlay.h b/src/platform/libretro/libretro_iv_overlay.h
+new file mode 100644
+index 0000000..f38edbc
+--- /dev/null
++++ b/src/platform/libretro/libretro_iv_overlay.h
+@@ -0,0 +1,26 @@
++/* Copyright (c) 2026 mGBA contributors
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++#ifndef LIBRETRO_IV_OVERLAY_H
++#define LIBRETRO_IV_OVERLAY_H
++
++#include "libretro_firered_iv.h"
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#define FIRERED_IV_OVERLAY_SLOT_WIDTH 240
++#define FIRERED_IV_OVERLAY_SLOT_HEIGHT 160
++
++/* Draws an opaque IV panel inside the indicated 240x160 player slot.
++ * logicalPlayer is zero based and is used only for the P1/P2/P3 title.
++ * stride and pixelCount are measured in uint16_t RGB565 pixels. */
++bool fireRedIvOverlayDraw(uint16_t* pixels, size_t pixelCount, size_t stride,
++		unsigned canvasWidth, unsigned canvasHeight,
++		unsigned slotX, unsigned slotY, unsigned logicalPlayer,
++		const struct FireRedIvParty* party);
++
++#endif
 diff --git a/src/platform/libretro/libretro_multi.c b/src/platform/libretro/libretro_multi.c
 new file mode 100644
-index 0000000..0d22dba
+index 0000000..0da812d
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi.c
-@@ -0,0 +1,1348 @@
+@@ -0,0 +1,1436 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -1468,6 +2173,8 @@ index 0000000..0d22dba
 +
 +#include "libretro-audio.h"
 +#include "libretro_firered_dialogue.h"
++#include "libretro_firered_iv.h"
++#include "libretro_iv_overlay.h"
 +#include "libretro-vfs.h"
 +#include "libretro_multi_support.h"
 +
@@ -1489,7 +2196,7 @@ index 0000000..0d22dba
 +#error "The barebones multi-instance core requires the GBA core"
 +#endif
 +
-+#define MULTI_FRONTEND_VERSION "0.3.1"
++#define MULTI_FRONTEND_VERSION "0.3.2"
 +#define VIDEO_STRIDE 256
 +#define VIDEO_HEIGHT_MAX 224
 +#define VIDEO_BUFFER_PIXELS (VIDEO_STRIDE * VIDEO_HEIGHT_MAX)
@@ -1531,6 +2238,9 @@ index 0000000..0d22dba
 +	struct FireRedDialogueDetector dialogueDetector;
 +	struct MultiDialogueInputGuard dialogueInput;
 +	bool dialogueWasEnabled;
++	const uint8_t* ewram;
++	size_t ewramSize;
++	struct FireRedIvParty ivParty;
 +};
 +
 +struct MultiFrameCommand {
@@ -1540,6 +2250,7 @@ index 0000000..0d22dba
 +	unsigned dialogueSpeedTenths;
 +	bool dialogueEnabled;
 +	bool dialogueAutoAdvance;
++	bool ivRefreshRequested;
 +};
 +
 +struct MultiWorker {
@@ -1566,6 +2277,7 @@ index 0000000..0d22dba
 +static enum MultiScreenOrder screenOrder = MULTI_SCREEN_ORDER_DEFAULT;
 +static struct MultiSpeedState speedState[MULTI_MAX_INSTANCES];
 +static struct MultiDialogueToggleState dialogueToggleState[MULTI_MAX_INSTANCES];
++static struct MultiIvCheckerState ivCheckerState[MULTI_MAX_INSTANCES];
 +static unsigned dialogueSpeedTenths = MULTI_DIALOGUE_DEFAULT_TENTHS;
 +static bool dialogueAutoAdvance = true;
 +static enum FireRedDialogueProfile dialogueProfile =
@@ -1730,6 +2442,7 @@ index 0000000..0d22dba
 +		multiSpeedInit(&speedState[i]);
 +		multiSpeedSetTarget(&speedState[i], _requestedSpeedTenths(i));
 +		multiDialogueToggleInit(&dialogueToggleState[i]);
++		multiIvCheckerInit(&ivCheckerState[i]);
 +	}
 +}
 +
@@ -1895,6 +2608,9 @@ index 0000000..0d22dba
 +			instance->core, GBA_REGION_IWRAM, &iwramSize);
 +	fireRedDialogueInit(&instance->dialogueDetector, dialogueProfile,
 +			ewram, ewramSize, iwram, iwramSize, romData, romSize);
++	instance->ewram = ewram;
++	instance->ewramSize = ewramSize;
++	memset(&instance->ivParty, 0, sizeof(instance->ivParty));
 +	multiDialogueInputGuardInit(&instance->dialogueInput);
 +	instance->dialogueWasEnabled = false;
 +	_loadBios(instance->core);
@@ -1995,7 +2711,8 @@ index 0000000..0d22dba
 +	instance->dialogueWasEnabled = false;
 +}
 +
-+static void _runInstanceFrames(unsigned index, const struct MultiFrameCommand* command) {
++static void _runInstanceEmulation(unsigned index,
++		const struct MultiFrameCommand* command) {
 +	struct MultiInstance* instance = &instances[index];
 +	const uint16_t advanceMask = (uint16_t) ((1U << GBA_KEY_A) | (1U << GBA_KEY_B));
 +	uint16_t guardedKeys;
@@ -2113,6 +2830,17 @@ index 0000000..0d22dba
 +	/* Page waits with auto-advance disabled, and the verified transition into a
 +	 * terminal wait, always advance by one real emulated frame at 1x. */
 +	_runCoreFrames(index, releasedKeys, 1, 1);
++}
++
++static void _runInstanceFrames(unsigned index,
++		const struct MultiFrameCommand* command) {
++	struct MultiInstance* instance = &instances[index];
++	_runInstanceEmulation(index, command);
++	if (command->ivRefreshRequested) {
++		fireRedIvReadParty(
++				fireRedDialogueProfileSupported(instance->dialogueDetector.profile),
++				instance->ewram, instance->ewramSize, &instance->ivParty);
++	}
 +}
 +
 +static void* _workerMain(void* context) {
@@ -2340,12 +3068,16 @@ index 0000000..0d22dba
 +	return true;
 +}
 +
-+static uint16_t _readKeys(unsigned port, bool* speedToggle, bool* dialogueToggle) {
++static uint16_t _readKeys(unsigned port, bool* speedToggle, bool* dialogueToggle,
++		bool* ivToggle) {
 +	if (speedToggle) {
 +		*speedToggle = false;
 +	}
 +	if (dialogueToggle) {
 +		*dialogueToggle = false;
++	}
++	if (ivToggle) {
++		*ivToggle = false;
 +	}
 +	if (!inputCallback) {
 +		return 0;
@@ -2363,6 +3095,9 @@ index 0000000..0d22dba
 +		if (dialogueToggle) {
 +			*dialogueToggle = (mask >> RETRO_DEVICE_ID_JOYPAD_L2) & 1U;
 +		}
++		if (ivToggle) {
++			*ivToggle = (mask >> RETRO_DEVICE_ID_JOYPAD_X) & 1U;
++		}
 +	} else {
 +		for (unsigned i = 0; i < sizeof(keymap) / sizeof(*keymap); ++i) {
 +			keys |= (!!inputCallback(port, RETRO_DEVICE_JOYPAD, 0, keymap[i])) << i;
@@ -2374,6 +3109,10 @@ index 0000000..0d22dba
 +		if (dialogueToggle) {
 +			*dialogueToggle = !!inputCallback(port, RETRO_DEVICE_JOYPAD, 0,
 +					RETRO_DEVICE_ID_JOYPAD_L2);
++		}
++		if (ivToggle) {
++			*ivToggle = !!inputCallback(port, RETRO_DEVICE_JOYPAD, 0,
++					RETRO_DEVICE_ID_JOYPAD_X);
 +		}
 +	}
 +	return keys;
@@ -2432,6 +3171,35 @@ index 0000000..0d22dba
 +				player + 1);
 +		break;
 +	case MULTI_DIALOGUE_TOGGLE_NONE:
++	default:
++		return;
++	}
++	struct retro_message message = { text, 240 };
++	environCallback(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
++	_frontendLog(RETRO_LOG_INFO, "%s", text);
++}
++
++static void _showIvCheckerMessage(unsigned player,
++		enum MultiIvCheckerToggleResult result) {
++	if (!environCallback || result == MULTI_IV_CHECKER_TOGGLE_NONE) {
++		return;
++	}
++	char text[144];
++	switch (result) {
++	case MULTI_IV_CHECKER_TOGGLE_SHOWN:
++		snprintf(text, sizeof(text),
++				"Player %u FireRed party IV checker: on", player + 1);
++		break;
++	case MULTI_IV_CHECKER_TOGGLE_HIDDEN:
++		snprintf(text, sizeof(text),
++				"Player %u FireRed party IV checker: off", player + 1);
++		break;
++	case MULTI_IV_CHECKER_TOGGLE_UNAVAILABLE:
++		snprintf(text, sizeof(text),
++				"Player %u IV checker unavailable: clean FireRed USA 1.0/1.1 required",
++				player + 1);
++		break;
++	case MULTI_IV_CHECKER_TOGGLE_NONE:
 +	default:
 +		return;
 +	}
@@ -2582,13 +3350,13 @@ index 0000000..0d22dba
 +	useBitmasks = environCallback(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL);
 +
 +	static struct retro_input_descriptor descriptors[
-+			MULTI_MAX_INSTANCES * ((sizeof(keymap) / sizeof(*keymap)) + 2) + 1];
++			MULTI_MAX_INSTANCES * ((sizeof(keymap) / sizeof(*keymap)) + 3) + 1];
 +	static const char* names[] = {
 +		"A", "B", "Select", "Start", "Right", "Left", "Up", "Down", "R", "L",
 +	};
 +	memset(descriptors, 0, sizeof(descriptors));
 +	for (unsigned port = 0; port < MULTI_MAX_INSTANCES; ++port) {
-+		size_t base = port * ((sizeof(keymap) / sizeof(*keymap)) + 2);
++		size_t base = port * ((sizeof(keymap) / sizeof(*keymap)) + 3);
 +		for (unsigned key = 0; key < sizeof(keymap) / sizeof(*keymap); ++key) {
 +			struct retro_input_descriptor* descriptor = &descriptors[base + key];
 +			descriptor->port = port;
@@ -2608,6 +3376,12 @@ index 0000000..0d22dba
 +		dialogue->device = RETRO_DEVICE_JOYPAD;
 +		dialogue->id = RETRO_DEVICE_ID_JOYPAD_L2;
 +		dialogue->description = "Toggle FireRed Dialogue Assist";
++		struct retro_input_descriptor* ivChecker =
++				&descriptors[base + sizeof(keymap) / sizeof(*keymap) + 2];
++		ivChecker->port = port;
++		ivChecker->device = RETRO_DEVICE_JOYPAD;
++		ivChecker->id = RETRO_DEVICE_ID_JOYPAD_X;
++		ivChecker->description = "Toggle FireRed Party IV Checker";
 +	}
 +	environCallback(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, descriptors);
 +
@@ -2685,7 +3459,8 @@ index 0000000..0d22dba
 +	for (unsigned i = 0; i < instanceCount; ++i) {
 +		bool speedToggle = false;
 +		bool dialogueToggle = false;
-+		frames[i].keys = _readKeys(i, &speedToggle, &dialogueToggle);
++		bool ivToggle = false;
++		frames[i].keys = _readKeys(i, &speedToggle, &dialogueToggle, &ivToggle);
 +		bool wasDown = speedState[i].buttonDown;
 +		if (multiSpeedHandleR2(&speedState[i], speedToggle)) {
 +			_showSpeedMessage(i);
@@ -2698,11 +3473,18 @@ index 0000000..0d22dba
 +				fireRedDialogueProfileSupported(
 +						instances[i].dialogueDetector.profile));
 +		_showDialogueMessage(i, dialogueResult);
++		enum MultiIvCheckerToggleResult ivResult = multiIvCheckerHandleX(
++				&ivCheckerState[i], ivToggle,
++				fireRedDialogueProfileSupported(
++						instances[i].dialogueDetector.profile));
++		_showIvCheckerMessage(i, ivResult);
 +		frames[i].manualFrames = multiSpeedNextFrames(&speedState[i]);
 +		frames[i].manualSpeedTenths = _effectiveAudioSpeed(i);
 +		frames[i].dialogueSpeedTenths = dialogueSpeedTenths;
 +		frames[i].dialogueEnabled = dialogueToggleState[i].enabled;
 +		frames[i].dialogueAutoAdvance = dialogueAutoAdvance;
++		frames[i].ivRefreshRequested =
++				multiIvCheckerShouldRefresh(&ivCheckerState[i]);
 +	}
 +	_prepareAudioPipelines();
 +	_executeBatch(WORKER_COMMAND_FRAME, frames);
@@ -2718,6 +3500,15 @@ index 0000000..0d22dba
 +			multiComposeFrames(compositeBuffer, COMPOSITE_BUFFER_PIXELS,
 +				sizeof(*compositeBuffer), sourceVideo, VIDEO_STRIDE,
 +				instanceCount, &layout, playerAtSlot)) {
++		for (unsigned slot = 0; slot < instanceCount; ++slot) {
++			unsigned player = playerAtSlot[slot];
++			if (ivCheckerState[player].visible) {
++				fireRedIvOverlayDraw(compositeBuffer, COMPOSITE_BUFFER_PIXELS,
++						layout.width, layout.width, layout.height,
++						layout.placement[slot].x, layout.placement[slot].y,
++						player, &instances[player].ivParty);
++			}
++		}
 +		videoCallback(compositeBuffer, layout.width, layout.height,
 +				layout.width * sizeof(*compositeBuffer));
 +	}
@@ -2731,6 +3522,8 @@ index 0000000..0d22dba
 +	_executeBatch(WORKER_COMMAND_RESET, NULL);
 +	for (unsigned i = 0; i < instanceCount; ++i) {
 +		multiSpeedResetPhase(&speedState[i]);
++		memset(&instances[i].ivParty, 0, sizeof(instances[i].ivParty));
++		multiIvCheckerRequestRefresh(&ivCheckerState[i]);
 +	}
 +	_resetAudioPipeline(true);
 +}
@@ -2784,10 +3577,10 @@ index 0000000..0d22dba
 +}
 diff --git a/src/platform/libretro/libretro_multi_support.c b/src/platform/libretro/libretro_multi_support.c
 new file mode 100644
-index 0000000..96b080f
+index 0000000..1dab9a8
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi_support.c
-@@ -0,0 +1,449 @@
+@@ -0,0 +1,504 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -3081,6 +3874,61 @@ index 0000000..96b080f
 +	guard->advanceLockout = true;
 +}
 +
++void multiIvCheckerInit(struct MultiIvCheckerState* state) {
++	if (!state) {
++		return;
++	}
++	state->visible = false;
++	state->buttonDown = false;
++	state->refreshCountdown = 0;
++}
++
++enum MultiIvCheckerToggleResult multiIvCheckerHandleX(
++		struct MultiIvCheckerState* state, bool pressed, bool supported) {
++	if (!state) {
++		return MULTI_IV_CHECKER_TOGGLE_NONE;
++	}
++
++	bool rising = pressed && !state->buttonDown;
++	state->buttonDown = pressed;
++	if (!supported) {
++		state->visible = false;
++		state->refreshCountdown = 0;
++		return rising ? MULTI_IV_CHECKER_TOGGLE_UNAVAILABLE :
++				MULTI_IV_CHECKER_TOGGLE_NONE;
++	}
++	if (!rising) {
++		return MULTI_IV_CHECKER_TOGGLE_NONE;
++	}
++
++	state->visible = !state->visible;
++	state->refreshCountdown = 0;
++	return state->visible ? MULTI_IV_CHECKER_TOGGLE_SHOWN :
++			MULTI_IV_CHECKER_TOGGLE_HIDDEN;
++}
++
++bool multiIvCheckerShouldRefresh(struct MultiIvCheckerState* state) {
++	if (!state || !state->visible) {
++		if (state) {
++			state->refreshCountdown = 0;
++		}
++		return false;
++	}
++
++	if (state->refreshCountdown > 1) {
++		--state->refreshCountdown;
++		return false;
++	}
++	state->refreshCountdown = MULTI_IV_CHECKER_REFRESH_FRAMES;
++	return true;
++}
++
++void multiIvCheckerRequestRefresh(struct MultiIvCheckerState* state) {
++	if (state) {
++		state->refreshCountdown = 0;
++	}
++}
++
 +enum MultiAudioMode multiAudioParseMode(const char* value) {
 +	if (!value || !strcmp(value, "Player 1") || !strcmp(value, "player 1")) {
 +		return MULTI_AUDIO_PLAYER_1;
@@ -3239,10 +4087,10 @@ index 0000000..96b080f
 +}
 diff --git a/src/platform/libretro/libretro_multi_support.h b/src/platform/libretro/libretro_multi_support.h
 new file mode 100644
-index 0000000..b3a1752
+index 0000000..f22e6e1
 --- /dev/null
 +++ b/src/platform/libretro/libretro_multi_support.h
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,162 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -3273,6 +4121,8 @@ index 0000000..b3a1752
 +#define MULTI_DIALOGUE_MAX_TENTHS 200
 +#define MULTI_DIALOGUE_DEFAULT_TENTHS 100
 +#define MULTI_DIALOGUE_MAX_FRAMES (MULTI_DIALOGUE_MAX_TENTHS / MULTI_SPEED_MIN_TENTHS)
++
++#define MULTI_IV_CHECKER_REFRESH_FRAMES 15
 +
 +struct MultiPlacement {
 +	unsigned x;
@@ -3313,6 +4163,15 @@ index 0000000..b3a1752
 +	bool buttonDown;
 +};
 +
++/* One of these states is owned by each logical player. The frontend may call
++ * multiIvCheckerShouldRefresh once per video frame; it performs no work while
++ * the checker is hidden and bounds visible refreshes to this fixed cadence. */
++struct MultiIvCheckerState {
++	bool visible;
++	bool buttonDown;
++	unsigned refreshCountdown;
++};
++
 +/* A dialogue advance is a one-frame pulse. After either a physical or
 + * synthetic pulse, one released emulated frame is owed. A physical button
 + * that remains held is then masked until both A and B have been released,
@@ -3327,6 +4186,13 @@ index 0000000..b3a1752
 +	MULTI_DIALOGUE_TOGGLE_ENABLED,
 +	MULTI_DIALOGUE_TOGGLE_DISABLED,
 +	MULTI_DIALOGUE_TOGGLE_UNAVAILABLE,
++};
++
++enum MultiIvCheckerToggleResult {
++	MULTI_IV_CHECKER_TOGGLE_NONE,
++	MULTI_IV_CHECKER_TOGGLE_SHOWN,
++	MULTI_IV_CHECKER_TOGGLE_HIDDEN,
++	MULTI_IV_CHECKER_TOGGLE_UNAVAILABLE,
 +};
 +
 +enum MultiAudioMode {
@@ -3367,6 +4233,11 @@ index 0000000..b3a1752
 +bool multiDialogueInputPrepare(struct MultiDialogueInputGuard* guard,
 +		uint16_t rawKeys, uint16_t advanceMask, uint16_t* effectiveKeys);
 +void multiDialogueInputAdvanced(struct MultiDialogueInputGuard* guard);
++void multiIvCheckerInit(struct MultiIvCheckerState* state);
++enum MultiIvCheckerToggleResult multiIvCheckerHandleX(
++		struct MultiIvCheckerState* state, bool pressed, bool supported);
++bool multiIvCheckerShouldRefresh(struct MultiIvCheckerState* state);
++void multiIvCheckerRequestRefresh(struct MultiIvCheckerState* state);
 +enum MultiAudioMode multiAudioParseMode(const char* value);
 +int multiAudioSelectedIndex(enum MultiAudioMode mode, unsigned activeCount);
 +void multiAudioClockReset(struct MultiAudioClock* clock);
@@ -3384,7 +4255,7 @@ index 0000000..b3a1752
 +#endif
 diff --git a/src/platform/libretro/mgba_multi_libretro.info b/src/platform/libretro/mgba_multi_libretro.info
 new file mode 100644
-index 0000000..52bbc3a
+index 0000000..b80b33f
 --- /dev/null
 +++ b/src/platform/libretro/mgba_multi_libretro.info
 @@ -0,0 +1,13 @@
@@ -3399,7 +4270,7 @@ index 0000000..52bbc3a
 +database = "Nintendo - Game Boy Advance"
 +license = "MPLv2"
 +permissions = ""
-+display_version = "0.11-dev-multi.0.3.1"
++display_version = "0.11-dev-multi.0.3.2"
 +supports_no_game = "false"
 diff --git a/tests/libretro_audio_test.c b/tests/libretro_audio_test.c
 new file mode 100644
@@ -4634,12 +5505,592 @@ index 0000000..dda5931
 +	}
 +	return 0;
 +}
+diff --git a/tests/libretro_firered_iv_test.c b/tests/libretro_firered_iv_test.c
+new file mode 100644
+index 0000000..6e8f107
+--- /dev/null
++++ b/tests/libretro_firered_iv_test.c
+@@ -0,0 +1,305 @@
++/* Copyright (c) 2026 mGBA contributors
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "libretro_firered_iv.h"
++
++#include <assert.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++
++#define EWRAM_SIZE 0x00040000U
++#define PARTY_COUNT_OFFSET 0x00024029U
++#define PARTY_OFFSET 0x00024284U
++#define PARTY_RECORD_SIZE 100U
++#define PARTY_END (PARTY_OFFSET + FIRERED_IV_PARTY_CAPACITY * PARTY_RECORD_SIZE)
++
++enum TestSubstruct {
++	TEST_GROWTH,
++	TEST_ATTACKS,
++	TEST_EVS,
++	TEST_MISC,
++};
++
++/* Physical order, deliberately represented differently from the production
++ * logical-to-physical lookup table. */
++static const uint8_t sPhysicalOrder[24][4] = {
++	{ TEST_GROWTH, TEST_ATTACKS, TEST_EVS, TEST_MISC },
++	{ TEST_GROWTH, TEST_ATTACKS, TEST_MISC, TEST_EVS },
++	{ TEST_GROWTH, TEST_EVS, TEST_ATTACKS, TEST_MISC },
++	{ TEST_GROWTH, TEST_EVS, TEST_MISC, TEST_ATTACKS },
++	{ TEST_GROWTH, TEST_MISC, TEST_ATTACKS, TEST_EVS },
++	{ TEST_GROWTH, TEST_MISC, TEST_EVS, TEST_ATTACKS },
++	{ TEST_ATTACKS, TEST_GROWTH, TEST_EVS, TEST_MISC },
++	{ TEST_ATTACKS, TEST_GROWTH, TEST_MISC, TEST_EVS },
++	{ TEST_ATTACKS, TEST_EVS, TEST_GROWTH, TEST_MISC },
++	{ TEST_ATTACKS, TEST_EVS, TEST_MISC, TEST_GROWTH },
++	{ TEST_ATTACKS, TEST_MISC, TEST_GROWTH, TEST_EVS },
++	{ TEST_ATTACKS, TEST_MISC, TEST_EVS, TEST_GROWTH },
++	{ TEST_EVS, TEST_GROWTH, TEST_ATTACKS, TEST_MISC },
++	{ TEST_EVS, TEST_GROWTH, TEST_MISC, TEST_ATTACKS },
++	{ TEST_EVS, TEST_ATTACKS, TEST_GROWTH, TEST_MISC },
++	{ TEST_EVS, TEST_ATTACKS, TEST_MISC, TEST_GROWTH },
++	{ TEST_EVS, TEST_MISC, TEST_GROWTH, TEST_ATTACKS },
++	{ TEST_EVS, TEST_MISC, TEST_ATTACKS, TEST_GROWTH },
++	{ TEST_MISC, TEST_GROWTH, TEST_ATTACKS, TEST_EVS },
++	{ TEST_MISC, TEST_GROWTH, TEST_EVS, TEST_ATTACKS },
++	{ TEST_MISC, TEST_ATTACKS, TEST_GROWTH, TEST_EVS },
++	{ TEST_MISC, TEST_ATTACKS, TEST_EVS, TEST_GROWTH },
++	{ TEST_MISC, TEST_EVS, TEST_GROWTH, TEST_ATTACKS },
++	{ TEST_MISC, TEST_EVS, TEST_ATTACKS, TEST_GROWTH },
++};
++
++static void write16(uint8_t* destination, uint16_t value) {
++	destination[0] = (uint8_t) value;
++	destination[1] = (uint8_t) (value >> 8);
++}
++
++static void write32(uint8_t* destination, uint32_t value) {
++	destination[0] = (uint8_t) value;
++	destination[1] = (uint8_t) (value >> 8);
++	destination[2] = (uint8_t) (value >> 16);
++	destination[3] = (uint8_t) (value >> 24);
++}
++
++static unsigned physicalSubstruct(unsigned permutation,
++		enum TestSubstruct logical) {
++	for (unsigned physical = 0; physical < 4; ++physical) {
++		if (sPhysicalOrder[permutation][physical] == (uint8_t) logical) {
++			return physical;
++		}
++	}
++	abort();
++}
++
++static uint32_t ivWord(bool egg) {
++	uint32_t value = UINT32_C(31) | UINT32_C(30) << 5 |
++			UINT32_C(29) << 10 | UINT32_C(28) << 15 |
++			UINT32_C(27) << 20 | UINT32_C(26) << 25;
++	if (egg) {
++		value |= UINT32_C(1) << 30;
++	}
++	return value;
++}
++
++static void makePokemon(uint8_t* record, unsigned permutation,
++		uint16_t species, uint8_t level, bool outerEgg, bool innerEgg) {
++	uint8_t plain[48] = { 0 };
++	uint32_t personality = permutation;
++	uint32_t otId = UINT32_C(0x89ABCDEF);
++	uint32_t key = personality ^ otId;
++	unsigned growth = physicalSubstruct(permutation, TEST_GROWTH);
++	unsigned misc = physicalSubstruct(permutation, TEST_MISC);
++
++	memset(record, 0, PARTY_RECORD_SIZE);
++	write32(record, personality);
++	write32(record + 4, otId);
++	/* "Ae?9" exercises accent folding, fallback, and the digit range. */
++	record[8] = 0x01;
++	record[9] = 0x1B;
++	record[10] = 0x80;
++	record[11] = 0xAA;
++	record[12] = 0xFF;
++	record[18] = 2;
++	record[19] = (uint8_t) (0x02U | (outerEgg ? 0x04U : 0U));
++	record[84] = level;
++
++	write16(plain + growth * 12U, species);
++	write32(plain + misc * 12U + 4U, ivWord(innerEgg));
++	uint16_t checksum = 0;
++	for (unsigned offset = 0; offset < sizeof(plain); offset += 2) {
++		checksum = (uint16_t) (checksum +
++				((uint16_t) plain[offset] | (uint16_t) plain[offset + 1] << 8));
++	}
++	write16(record + 28, checksum);
++	for (unsigned offset = 0; offset < sizeof(plain); offset += 4) {
++		uint32_t value = (uint32_t) plain[offset] |
++				(uint32_t) plain[offset + 1] << 8 |
++				(uint32_t) plain[offset + 2] << 16 |
++				(uint32_t) plain[offset + 3] << 24;
++		write32(record + 32 + offset, value ^ key);
++	}
++}
++
++static void assertValid(const struct FireRedIvPokemon* pokemon,
++		uint16_t species) {
++	static const uint8_t expected[] = { 31, 30, 29, 27, 26, 28 };
++	assert(pokemon->status == FIRERED_IV_VALID);
++	assert(pokemon->species == species);
++	assert(pokemon->level == 50);
++	assert(memcmp(pokemon->ivs, expected, sizeof(expected)) == 0);
++	assert(strcmp(pokemon->nickname, "Ae?9") == 0);
++}
++
++static void assertCorruptAndClear(const struct FireRedIvPokemon* pokemon) {
++	assert(pokemon->status == FIRERED_IV_CORRUPT);
++	assert(pokemon->species == 0);
++	assert(pokemon->level == 0);
++	for (unsigned i = 0; i < FIRERED_IV_STAT_COUNT; ++i) {
++		assert(pokemon->ivs[i] == 0);
++	}
++	assert(pokemon->nickname[0] == '\0');
++}
++
++static void poisonParty(struct FireRedIvParty* party) {
++	memset(party, 0xA5, sizeof(*party));
++}
++
++static void assertEmptyParty(const struct FireRedIvParty* party) {
++	assert(party->partyCount == 0);
++	for (unsigned slot = 0; slot < FIRERED_IV_PARTY_CAPACITY; ++slot) {
++		const struct FireRedIvPokemon* pokemon = &party->pokemon[slot];
++		assert(pokemon->status == FIRERED_IV_EMPTY);
++		assert(pokemon->species == 0);
++		assert(pokemon->level == 0);
++		for (unsigned stat = 0; stat < FIRERED_IV_STAT_COUNT; ++stat) {
++			assert(pokemon->ivs[stat] == 0);
++		}
++		assert(pokemon->nickname[0] == '\0');
++	}
++}
++
++static void testAllPermutations(void) {
++	uint8_t* ewram = calloc(1, EWRAM_SIZE);
++	assert(ewram);
++	struct FireRedIvParty party;
++	ewram[PARTY_COUNT_OFFSET] = 1;
++	for (unsigned permutation = 0; permutation < 24; ++permutation) {
++		makePokemon(ewram + PARTY_OFFSET, permutation, 25, 50, false, false);
++		assert(fireRedIvReadParty(true, ewram, EWRAM_SIZE, &party));
++		assert(party.partyCount == 1);
++		assertValid(&party.pokemon[0], 25);
++		for (unsigned i = 1; i < FIRERED_IV_PARTY_CAPACITY; ++i) {
++			assert(party.pokemon[i].status == FIRERED_IV_EMPTY);
++		}
++	}
++	free(ewram);
++}
++
++static void testGateBoundsAndCount(void) {
++	uint8_t* allocation = calloc(1, EWRAM_SIZE + 1U);
++	assert(allocation);
++	uint8_t* ewram = allocation + 1;
++	struct FireRedIvParty party;
++
++	poisonParty(&party);
++	assert(!fireRedIvReadParty(false, ewram, EWRAM_SIZE, &party));
++	assertEmptyParty(&party);
++	poisonParty(&party);
++	assert(!fireRedIvReadParty(true, NULL, EWRAM_SIZE, &party));
++	assertEmptyParty(&party);
++	poisonParty(&party);
++	assert(!fireRedIvReadParty(true, ewram, PARTY_COUNT_OFFSET, &party));
++	assertEmptyParty(&party);
++	poisonParty(&party);
++	assert(!fireRedIvReadParty(true, ewram, PARTY_END - 1U, &party));
++	assertEmptyParty(&party);
++	assert(!fireRedIvReadParty(true, ewram, EWRAM_SIZE, NULL));
++
++	ewram[PARTY_COUNT_OFFSET] = FIRERED_IV_PARTY_CAPACITY + 1U;
++	poisonParty(&party);
++	assert(!fireRedIvReadParty(true, ewram, EWRAM_SIZE, &party));
++	assertEmptyParty(&party);
++	ewram[PARTY_COUNT_OFFSET] = 0;
++	assert(fireRedIvReadParty(true, ewram, PARTY_END, &party));
++	assert(party.partyCount == 0);
++	for (unsigned i = 0; i < FIRERED_IV_PARTY_CAPACITY; ++i) {
++		assert(party.pokemon[i].status == FIRERED_IV_EMPTY);
++	}
++	/* The deliberately one-byte-offset EWRAM base exercises all record reads,
++	 * not just the byte-sized count access. */
++	for (unsigned i = 0; i < FIRERED_IV_PARTY_CAPACITY; ++i) {
++		makePokemon(ewram + PARTY_OFFSET + i * PARTY_RECORD_SIZE,
++				i, (uint16_t) (1U + i), 50, false, false);
++	}
++	ewram[PARTY_COUNT_OFFSET] = FIRERED_IV_PARTY_CAPACITY;
++	assert(fireRedIvReadParty(true, ewram, PARTY_END, &party));
++	assert(party.partyCount == FIRERED_IV_PARTY_CAPACITY);
++	for (unsigned i = 0; i < FIRERED_IV_PARTY_CAPACITY; ++i) {
++		assertValid(&party.pokemon[i], (uint16_t) (1U + i));
++	}
++	free(allocation);
++}
++
++static void testStatusesAndNoMutation(void) {
++	uint8_t* ewram = calloc(1, EWRAM_SIZE);
++	assert(ewram);
++	struct FireRedIvParty party;
++	uint8_t before[FIRERED_IV_PARTY_CAPACITY * PARTY_RECORD_SIZE];
++	ewram[PARTY_COUNT_OFFSET] = 3;
++	makePokemon(ewram + PARTY_OFFSET, 3, 251, 50, false, false);
++	makePokemon(ewram + PARTY_OFFSET + PARTY_RECORD_SIZE,
++			10, 25, 0, true, true);
++	makePokemon(ewram + PARTY_OFFSET + PARTY_RECORD_SIZE * 2U,
++			23, 25, 50, false, false);
++	ewram[PARTY_OFFSET + PARTY_RECORD_SIZE * 2U + 32U] ^= 1U;
++	memcpy(before, ewram + PARTY_OFFSET, sizeof(before));
++
++	assert(fireRedIvReadParty(true, ewram, EWRAM_SIZE, &party));
++	assert(party.partyCount == 3);
++	assertValid(&party.pokemon[0], 251);
++	assert(party.pokemon[1].status == FIRERED_IV_EGG);
++	assertCorruptAndClear(&party.pokemon[2]);
++	assert(party.pokemon[3].status == FIRERED_IV_EMPTY);
++	assert(memcmp(before, ewram + PARTY_OFFSET, sizeof(before)) == 0);
++	makePokemon(ewram + PARTY_OFFSET, 0, 25, 50, false, false);
++	ewram[PARTY_OFFSET + 18U] = 1;
++	assert(fireRedIvReadParty(true, ewram, EWRAM_SIZE, &party));
++	assert(party.pokemon[0].status == FIRERED_IV_VALID);
++	assert(strcmp(party.pokemon[0].nickname, "????") == 0);
++	makePokemon(ewram + PARTY_OFFSET, 0, 25, 50, false, false);
++	memset(ewram + PARTY_OFFSET + 8U, 0xBB, 10U);
++	assert(fireRedIvReadParty(true, ewram, EWRAM_SIZE, &party));
++	assert(strcmp(party.pokemon[0].nickname, "AAAAAAAAAA") == 0);
++
++	makePokemon(ewram + PARTY_OFFSET, 4, 25, 50, true, false);
++	assert(fireRedIvReadParty(true, ewram, EWRAM_SIZE, &party));
++	assertCorruptAndClear(&party.pokemon[0]);
++	makePokemon(ewram + PARTY_OFFSET, 4, 25, 50, false, true);
++	assert(fireRedIvReadParty(true, ewram, EWRAM_SIZE, &party));
++	assertCorruptAndClear(&party.pokemon[0]);
++	makePokemon(ewram + PARTY_OFFSET, 4, 25, 50, false, false);
++	ewram[PARTY_OFFSET + 19U] |= 1U;
++	assert(fireRedIvReadParty(true, ewram, EWRAM_SIZE, &party));
++	assertCorruptAndClear(&party.pokemon[0]);
++	makePokemon(ewram + PARTY_OFFSET, 4, 25, 50, false, false);
++	ewram[PARTY_OFFSET + 19U] &= (uint8_t) ~0x02U;
++	assert(fireRedIvReadParty(true, ewram, EWRAM_SIZE, &party));
++	assert(party.pokemon[0].status == FIRERED_IV_EMPTY);
++	assert(party.pokemon[0].species == 0);
++
++	static const uint16_t invalidSpecies[] = { 0, 252, 276, 412 };
++	for (unsigned i = 0; i < sizeof(invalidSpecies) / sizeof(*invalidSpecies); ++i) {
++		makePokemon(ewram + PARTY_OFFSET, i, invalidSpecies[i], 50,
++				false, false);
++		assert(fireRedIvReadParty(true, ewram, EWRAM_SIZE, &party));
++		assertCorruptAndClear(&party.pokemon[0]);
++	}
++	static const uint16_t validSpecies[] = { 1, 251, 277, 411 };
++	for (unsigned i = 0; i < sizeof(validSpecies) / sizeof(*validSpecies); ++i) {
++		makePokemon(ewram + PARTY_OFFSET, i, validSpecies[i], 50,
++				false, false);
++		assert(fireRedIvReadParty(true, ewram, EWRAM_SIZE, &party));
++		assert(party.pokemon[0].status == FIRERED_IV_VALID);
++	}
++	makePokemon(ewram + PARTY_OFFSET, 0, 25, 0, false, false);
++	assert(fireRedIvReadParty(true, ewram, EWRAM_SIZE, &party));
++	assertCorruptAndClear(&party.pokemon[0]);
++	makePokemon(ewram + PARTY_OFFSET, 0, 25, 101, false, false);
++	assert(fireRedIvReadParty(true, ewram, EWRAM_SIZE, &party));
++	assertCorruptAndClear(&party.pokemon[0]);
++	makePokemon(ewram + PARTY_OFFSET, 0, 252, 0, true, true);
++	assert(fireRedIvReadParty(true, ewram, EWRAM_SIZE, &party));
++	assertCorruptAndClear(&party.pokemon[0]);
++	free(ewram);
++}
++
++int main(void) {
++	testAllPermutations();
++	testGateBoundsAndCount();
++	testStatusesAndNoMutation();
++	return 0;
++}
+diff --git a/tests/libretro_iv_overlay_test.c b/tests/libretro_iv_overlay_test.c
+new file mode 100644
+index 0000000..55d1f2d
+--- /dev/null
++++ b/tests/libretro_iv_overlay_test.c
+@@ -0,0 +1,263 @@
++/* Copyright (c) 2026 mGBA contributors
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "libretro_iv_overlay.h"
++
++#include <assert.h>
++#include <limits.h>
++#include <stdint.h>
++#include <string.h>
++
++#define TEST_WIDTH 512U
++#define TEST_HEIGHT 400U
++#define TEST_STRIDE 527U
++#define TEST_GUARD 37U
++#define TEST_PIXELS ((size_t) TEST_STRIDE * TEST_HEIGHT)
++#define TEST_STORAGE_PIXELS (TEST_GUARD + TEST_PIXELS + TEST_GUARD)
++#define SENTINEL 0x6B4DU
++
++static uint16_t storage[TEST_STORAGE_PIXELS];
++static uint16_t reference[TEST_STORAGE_PIXELS];
++
++static void fillSentinel(uint16_t* values, size_t count) {
++	for (size_t i = 0; i < count; ++i) {
++		values[i] = SENTINEL;
++	}
++}
++
++static void assertGuardsUntouched(void) {
++	for (size_t i = 0; i < TEST_GUARD; ++i) {
++		assert(storage[i] == SENTINEL);
++		assert(storage[TEST_GUARD + TEST_PIXELS + i] == SENTINEL);
++	}
++}
++
++static struct FireRedIvParty exampleParty(void) {
++	struct FireRedIvParty party;
++	memset(&party, 0, sizeof(party));
++	party.partyCount = FIRERED_IV_PARTY_CAPACITY;
++
++	party.pokemon[0].status = FIRERED_IV_VALID;
++	party.pokemon[0].species = 1;
++	party.pokemon[0].level = 5;
++	memcpy(party.pokemon[0].nickname, "BULBASAUR", sizeof("BULBASAUR"));
++	for (unsigned stat = 0; stat < FIRERED_IV_STAT_COUNT; ++stat) {
++		party.pokemon[0].ivs[stat] = (uint8_t) (31U - stat);
++	}
++
++	party.pokemon[1].status = FIRERED_IV_EMPTY;
++	party.pokemon[2].status = FIRERED_IV_EGG;
++	party.pokemon[2].level = 1;
++	for (unsigned stat = 0; stat < FIRERED_IV_STAT_COUNT; ++stat) {
++		party.pokemon[2].ivs[stat] = (uint8_t) (stat + 1U);
++	}
++	party.pokemon[3].status = FIRERED_IV_CORRUPT;
++
++	party.pokemon[4].status = FIRERED_IV_VALID;
++	party.pokemon[4].species = 386;
++	party.pokemon[4].level = 100;
++	/* An unterminated/non-ASCII nickname must remain bounded and printable. */
++	memset(party.pokemon[4].nickname, 'Z',
++			sizeof(party.pokemon[4].nickname));
++	party.pokemon[4].nickname[3] = '\1';
++	for (unsigned stat = 0; stat < FIRERED_IV_STAT_COUNT; ++stat) {
++		party.pokemon[4].ivs[stat] = (uint8_t) stat;
++	}
++
++	/* Unknown states are deliberately rendered as corrupt. */
++	party.pokemon[5].status = (enum FireRedIvStatus) 99;
++	return party;
++}
++
++static void assertOnlyPanelChanged(unsigned width, unsigned height,
++		unsigned stride, unsigned slotX, unsigned slotY) {
++	const unsigned panelLeft = slotX + 2U;
++	const unsigned panelTop = slotY + 2U;
++	const unsigned panelRight = panelLeft + 236U;
++	const unsigned panelBottom = panelTop + 156U;
++	const uint16_t* pixels = storage + TEST_GUARD;
++	for (unsigned y = 0; y < height; ++y) {
++		for (unsigned x = 0; x < stride; ++x) {
++			bool inPanel = x < width && x >= panelLeft && x < panelRight &&
++					y >= panelTop && y < panelBottom;
++			if (inPanel) {
++				assert(pixels[(size_t) y * stride + x] != SENTINEL);
++			} else {
++				assert(pixels[(size_t) y * stride + x] == SENTINEL);
++			}
++		}
++	}
++	for (size_t i = (size_t) height * stride; i < TEST_PIXELS; ++i) {
++		assert(pixels[i] == SENTINEL);
++	}
++}
++
++static void testEveryPlacement(void) {
++	static const struct {
++		unsigned width;
++		unsigned height;
++		unsigned stride;
++		unsigned x;
++		unsigned y;
++	} placements[] = {
++		{ 240U, 160U, 240U, 0U, 0U },
++		{ 480U, 160U, 480U, 0U, 0U },
++		{ 480U, 160U, 480U, 240U, 0U },
++		{ 480U, 320U, 480U, 0U, 0U },
++		{ 480U, 320U, 480U, 240U, 0U },
++		{ 480U, 320U, 480U, 120U, 160U },
++		{ TEST_WIDTH, TEST_HEIGHT, TEST_STRIDE, 37U, 29U },
++	};
++	struct FireRedIvParty party = exampleParty();
++
++	for (size_t i = 0; i < sizeof(placements) / sizeof(*placements); ++i) {
++		fillSentinel(storage, TEST_STORAGE_PIXELS);
++		assert(fireRedIvOverlayDraw(storage + TEST_GUARD,
++				(size_t) placements[i].stride * placements[i].height,
++				placements[i].stride, placements[i].width,
++				placements[i].height, placements[i].x, placements[i].y,
++				(unsigned) (i % 3U), &party));
++		assertGuardsUntouched();
++		assertOnlyPanelChanged(placements[i].width, placements[i].height,
++				placements[i].stride, placements[i].x, placements[i].y);
++	}
++}
++
++static bool rowContains(unsigned rowY, uint16_t color) {
++	const uint16_t* pixels = storage + TEST_GUARD;
++	for (unsigned y = rowY - 3U; y < rowY + 10U; ++y) {
++		for (unsigned x = 2U; x < 238U; ++x) {
++			if (pixels[(size_t) y * 240U + x] == color) {
++				return true;
++			}
++		}
++	}
++	return false;
++}
++
++static void testStatusesAndPlayerTitle(void) {
++	struct FireRedIvParty party = exampleParty();
++	fillSentinel(storage, TEST_STORAGE_PIXELS);
++	assert(fireRedIvOverlayDraw(storage + TEST_GUARD, 240U * 160U, 240U,
++			240U, 160U, 0U, 0U, 0U, &party));
++	assert(rowContains(39U, 0xFFFFU)); /* valid */
++	assert(rowContains(57U, 0xAD55U)); /* empty */
++	assert(rowContains(75U, 0xFFE0U)); /* egg */
++	assert(rowContains(93U, 0xF800U)); /* corrupt */
++	assert(rowContains(129U, 0xF800U)); /* unknown is corrupt */
++
++	memcpy(reference, storage, sizeof(storage));
++	party.pokemon[2].ivs[FIRERED_IV_HP] = 31U;
++	fillSentinel(storage, TEST_STORAGE_PIXELS);
++	assert(fireRedIvOverlayDraw(storage + TEST_GUARD, 240U * 160U, 240U,
++			240U, 160U, 0U, 0U, 0U, &party));
++	bool eggRowChanged = false;
++	for (unsigned y = 72U; y < 85U; ++y) {
++		for (unsigned x = 2U; x < 238U; ++x) {
++			size_t pixel = TEST_GUARD + (size_t) y * 240U + x;
++			if (storage[pixel] != reference[pixel]) {
++				eggRowChanged = true;
++			}
++		}
++	}
++	assert(eggRowChanged);
++
++	/* The logical player label is independent from physical placement. */
++	party.pokemon[2].ivs[FIRERED_IV_HP] = 1U;
++	fillSentinel(storage, TEST_STORAGE_PIXELS);
++	assert(fireRedIvOverlayDraw(storage + TEST_GUARD, 240U * 160U, 240U,
++			240U, 160U, 0U, 0U, 2U, &party));
++	bool playerGlyphChanged = false;
++	for (size_t i = 0; i < TEST_STORAGE_PIXELS; ++i) {
++		if (storage[i] == reference[i]) {
++			continue;
++		}
++		assert(i >= TEST_GUARD);
++		size_t pixel = i - TEST_GUARD;
++		unsigned y = (unsigned) (pixel / 240U);
++		unsigned x = (unsigned) (pixel % 240U);
++		assert(x >= 13U && x < 18U && y >= 7U && y < 14U);
++		playerGlyphChanged = true;
++	}
++	assert(playerGlyphChanged);
++	assertGuardsUntouched();
++}
++
++static void testPartyCountIsAuthoritative(void) {
++	struct FireRedIvParty party = exampleParty();
++	party.partyCount = 1U;
++	fillSentinel(storage, TEST_STORAGE_PIXELS);
++	assert(fireRedIvOverlayDraw(storage + TEST_GUARD, 240U * 160U, 240U,
++			240U, 160U, 0U, 0U, 0U, &party));
++	assert(rowContains(39U, 0xFFFFU));
++	for (unsigned slot = 1U; slot < FIRERED_IV_PARTY_CAPACITY; ++slot) {
++		assert(rowContains(39U + slot * 18U, 0xAD55U));
++	}
++
++	party.partyCount = FIRERED_IV_PARTY_CAPACITY + 1U;
++	fillSentinel(storage, TEST_STORAGE_PIXELS);
++	assert(fireRedIvOverlayDraw(storage + TEST_GUARD, 240U * 160U, 240U,
++			240U, 160U, 0U, 0U, 0U, &party));
++	for (unsigned slot = 0U; slot < FIRERED_IV_PARTY_CAPACITY; ++slot) {
++		assert(rowContains(39U + slot * 18U, 0xF800U));
++	}
++}
++
++static void assertRejectedWithoutWrite(uint16_t* pixels, size_t pixelCount,
++		size_t stride, unsigned width, unsigned height,
++		unsigned slotX, unsigned slotY, unsigned player,
++		const struct FireRedIvParty* party) {
++	memcpy(reference, storage, sizeof(storage));
++	assert(!fireRedIvOverlayDraw(pixels, pixelCount, stride, width, height,
++			slotX, slotY, player, party));
++	assert(memcmp(storage, reference, sizeof(storage)) == 0);
++}
++
++static void testInvalidParameters(void) {
++	struct FireRedIvParty party = exampleParty();
++	uint16_t* pixels = storage + TEST_GUARD;
++	fillSentinel(storage, TEST_STORAGE_PIXELS);
++
++	assertRejectedWithoutWrite(NULL, 240U * 160U, 240U, 240U, 160U,
++			0U, 0U, 0U, &party);
++	assertRejectedWithoutWrite(pixels, 240U * 160U, 240U, 240U, 160U,
++			0U, 0U, 0U, NULL);
++	assertRejectedWithoutWrite(pixels, 240U * 160U, 240U, 240U, 160U,
++			0U, 0U, 3U, &party);
++	assertRejectedWithoutWrite(pixels, 240U * 160U, 240U, 240U, 160U,
++			0U, 0U, UINT_MAX, &party);
++	assertRejectedWithoutWrite(pixels, 0U, 0U, 0U, 0U,
++			0U, 0U, 0U, &party);
++	assertRejectedWithoutWrite(pixels, 239U * 160U, 239U, 239U, 160U,
++			0U, 0U, 0U, &party);
++	assertRejectedWithoutWrite(pixels, 240U * 159U, 240U, 240U, 159U,
++			0U, 0U, 0U, &party);
++	assertRejectedWithoutWrite(pixels, 240U * 160U, 240U, 240U, 160U,
++			1U, 0U, 0U, &party);
++	assertRejectedWithoutWrite(pixels, 240U * 160U, 240U, 240U, 160U,
++			0U, 1U, 0U, &party);
++	assertRejectedWithoutWrite(pixels, 240U * 160U, 240U, 240U, 160U,
++			UINT_MAX, 0U, 0U, &party);
++	assertRejectedWithoutWrite(pixels, 240U * 160U, 240U, 240U, 160U,
++			0U, UINT_MAX, 0U, &party);
++	assertRejectedWithoutWrite(pixels, 240U * 160U - 1U, 240U,
++			240U, 160U, 0U, 0U, 0U, &party);
++	assertRejectedWithoutWrite(pixels, SIZE_MAX, SIZE_MAX, 240U, 160U,
++			0U, 0U, 0U, &party);
++	/* Multiplication fits, but adding the visible final-row width does not. */
++	assertRejectedWithoutWrite(pixels, SIZE_MAX, SIZE_MAX / 159U,
++			240U, 160U, 0U, 0U, 0U, &party);
++	assertRejectedWithoutWrite(pixels, TEST_PIXELS, TEST_WIDTH - 1U,
++			TEST_WIDTH, TEST_HEIGHT, 0U, 0U, 0U, &party);
++}
++
++int main(void) {
++	testEveryPlacement();
++	testStatusesAndPlayerTitle();
++	testPartyCountIsAuthoritative();
++	testInvalidParameters();
++	return 0;
++}
 diff --git a/tests/libretro_multi_support_test.c b/tests/libretro_multi_support_test.c
 new file mode 100644
-index 0000000..40c5180
+index 0000000..de85021
 --- /dev/null
 +++ b/tests/libretro_multi_support_test.c
-@@ -0,0 +1,553 @@
+@@ -0,0 +1,683 @@
 +/* Copyright (c) 2026 mGBA contributors
 + *
 + * This Source Code Form is subject to the terms of the Mozilla Public
@@ -5059,6 +6510,133 @@ index 0000000..40c5180
 +	multiDialogueInputAdvanced(NULL);
 +}
 +
++static void testIvCheckerToggleAndRefresh(void) {
++	struct MultiIvCheckerState state;
++	multiIvCheckerInit(&state);
++	assert(!state.visible);
++	assert(!state.buttonDown);
++	assert(state.refreshCountdown == 0);
++	assert(!multiIvCheckerShouldRefresh(&state));
++	assert(state.refreshCountdown == 0);
++
++	/* X toggles only on a rising edge. Showing schedules an immediate read. */
++	assert(multiIvCheckerHandleX(&state, true, true) ==
++			MULTI_IV_CHECKER_TOGGLE_SHOWN);
++	assert(state.visible && state.buttonDown);
++	assert(state.refreshCountdown == 0);
++	assert(multiIvCheckerShouldRefresh(&state));
++	assert(state.refreshCountdown == MULTI_IV_CHECKER_REFRESH_FRAMES);
++	assert(multiIvCheckerHandleX(&state, true, true) ==
++			MULTI_IV_CHECKER_TOGGLE_NONE);
++	assert(state.visible);
++
++	/* The next refresh is exactly 15 frontend frames after the immediate one. */
++	for (unsigned frame = 1; frame < MULTI_IV_CHECKER_REFRESH_FRAMES; ++frame) {
++		assert(!multiIvCheckerShouldRefresh(&state));
++		assert(state.refreshCountdown == MULTI_IV_CHECKER_REFRESH_FRAMES - frame);
++	}
++	assert(multiIvCheckerShouldRefresh(&state));
++	assert(state.refreshCountdown == MULTI_IV_CHECKER_REFRESH_FRAMES);
++
++	/* Release does not toggle; the following rising edge hides the checker. */
++	assert(multiIvCheckerHandleX(&state, false, true) ==
++			MULTI_IV_CHECKER_TOGGLE_NONE);
++	assert(state.visible && !state.buttonDown);
++	assert(multiIvCheckerHandleX(&state, true, true) ==
++			MULTI_IV_CHECKER_TOGGLE_HIDDEN);
++	assert(!state.visible && state.buttonDown);
++	assert(state.refreshCountdown == 0);
++	for (unsigned frame = 0; frame < MULTI_IV_CHECKER_REFRESH_FRAMES * 2; ++frame) {
++		assert(!multiIvCheckerShouldRefresh(&state));
++		assert(state.refreshCountdown == 0);
++	}
++}
++
++static void testIvCheckerUnsupportedAndReset(void) {
++	struct MultiIvCheckerState state;
++	multiIvCheckerInit(&state);
++
++	/* Unsupported content always hides and clears pending work. It also tracks
++	 * the physical button, so support appearing under a held X cannot toggle. */
++	state.visible = true;
++	state.refreshCountdown = 7;
++	assert(multiIvCheckerHandleX(&state, true, false) ==
++			MULTI_IV_CHECKER_TOGGLE_UNAVAILABLE);
++	assert(!state.visible && state.buttonDown && state.refreshCountdown == 0);
++	assert(multiIvCheckerHandleX(&state, true, true) ==
++			MULTI_IV_CHECKER_TOGGLE_NONE);
++	assert(!state.visible);
++	assert(multiIvCheckerHandleX(&state, false, true) ==
++			MULTI_IV_CHECKER_TOGGLE_NONE);
++	assert(multiIvCheckerHandleX(&state, true, true) ==
++			MULTI_IV_CHECKER_TOGGLE_SHOWN);
++	assert(multiIvCheckerShouldRefresh(&state));
++
++	/* A core reset invalidates cached values and requests an immediate refresh
++	 * without changing visibility or the X-edge latch. */
++	for (unsigned frame = 1; frame < 5; ++frame) {
++		assert(!multiIvCheckerShouldRefresh(&state));
++	}
++	unsigned previousCountdown = state.refreshCountdown;
++	assert(previousCountdown > 0);
++	multiIvCheckerRequestRefresh(&state);
++	assert(state.visible && state.buttonDown && state.refreshCountdown == 0);
++	assert(multiIvCheckerShouldRefresh(&state));
++
++	/* A reset request while hidden remains dormant until a later show edge. */
++	assert(multiIvCheckerHandleX(&state, false, true) ==
++			MULTI_IV_CHECKER_TOGGLE_NONE);
++	assert(multiIvCheckerHandleX(&state, true, true) ==
++			MULTI_IV_CHECKER_TOGGLE_HIDDEN);
++	state.refreshCountdown = 9;
++	multiIvCheckerRequestRefresh(&state);
++	assert(state.refreshCountdown == 0);
++	assert(!multiIvCheckerShouldRefresh(&state));
++
++	/* Loss of support hides without spamming an unavailable message. A later
++	 * unsupported rising edge reports the error exactly once. */
++	assert(multiIvCheckerHandleX(&state, false, false) ==
++			MULTI_IV_CHECKER_TOGGLE_NONE);
++	assert(!state.visible && !state.buttonDown && state.refreshCountdown == 0);
++	assert(multiIvCheckerHandleX(&state, true, false) ==
++			MULTI_IV_CHECKER_TOGGLE_UNAVAILABLE);
++	assert(multiIvCheckerHandleX(&state, true, false) ==
++			MULTI_IV_CHECKER_TOGGLE_NONE);
++
++	/* Defensive null handling is inert and deterministic. */
++	multiIvCheckerInit(NULL);
++	multiIvCheckerRequestRefresh(NULL);
++	assert(!multiIvCheckerShouldRefresh(NULL));
++	assert(multiIvCheckerHandleX(NULL, true, true) ==
++			MULTI_IV_CHECKER_TOGGLE_NONE);
++}
++
++static void testIndependentIvCheckerStates(void) {
++	struct MultiIvCheckerState states[MULTI_MAX_INSTANCES];
++	for (unsigned player = 0; player < MULTI_MAX_INSTANCES; ++player) {
++		multiIvCheckerInit(&states[player]);
++	}
++
++	assert(multiIvCheckerHandleX(&states[0], true, true) ==
++			MULTI_IV_CHECKER_TOGGLE_SHOWN);
++	assert(multiIvCheckerHandleX(&states[2], true, true) ==
++			MULTI_IV_CHECKER_TOGGLE_SHOWN);
++	assert(states[0].visible && !states[1].visible && states[2].visible);
++	assert(multiIvCheckerShouldRefresh(&states[0]));
++	assert(!multiIvCheckerShouldRefresh(&states[1]));
++	assert(multiIvCheckerShouldRefresh(&states[2]));
++
++	for (unsigned frame = 1; frame <= MULTI_IV_CHECKER_REFRESH_FRAMES; ++frame) {
++		bool expected = frame == MULTI_IV_CHECKER_REFRESH_FRAMES;
++		assert(multiIvCheckerShouldRefresh(&states[0]) == expected);
++		assert(!multiIvCheckerShouldRefresh(&states[1]));
++		assert(multiIvCheckerShouldRefresh(&states[2]) == expected);
++	}
++	assert(states[0].refreshCountdown == MULTI_IV_CHECKER_REFRESH_FRAMES);
++	assert(states[1].refreshCountdown == 0);
++	assert(states[2].refreshCountdown == MULTI_IV_CHECKER_REFRESH_FRAMES);
++}
++
 +static void testAudioRoutes(void) {
 +	assert(multiAudioParseMode(NULL) == MULTI_AUDIO_PLAYER_1);
 +	assert(multiAudioParseMode("Player 1") == MULTI_AUDIO_PLAYER_1);
@@ -5187,6 +6765,9 @@ index 0000000..40c5180
 +	testIndependentSpeedStates();
 +	testDialogueOptionsAndL2Edges();
 +	testDialogueAdvanceInputGuard();
++	testIvCheckerToggleAndRefresh();
++	testIvCheckerUnsupportedAndReset();
++	testIndependentIvCheckerStates();
 +	testAudioRoutes();
 +	testExactAudioClock();
 +	testBoundedAudioFifo();

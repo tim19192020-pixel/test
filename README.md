@@ -1,14 +1,14 @@
 # Barebones mGBA Multi for Apple TV
 
 This reproducible build kit creates an unsigned, device-only Apple TV IPA with
-RetroArch 1.22.2 and one custom core: **mGBA Multi 0.3.1**. It builds on the
+RetroArch 1.22.2 and one custom core: **mGBA Multi 0.3.2**. It builds on the
 stable linkless core while keeping its scope to one GBA ROM in one, two, or
 three independent instances.
 
 The source revisions are pinned. The kit contains no games, BIOS files,
 certificates, provisioning profiles, or precompiled application.
 
-## Version 0.3.1 contract
+## Version 0.3.2 contract
 
 - One to three GBA instances; controller ports 1 through 3 map permanently to
   players 1 through 3.
@@ -49,9 +49,18 @@ certificates, provisioning profiles, or precompiled application.
   can accelerate; a final synthetic A still requires a fully safe cosmetic
   terminal path. Unsupported ROMs fail closed without live-state inspection or
   injected input.
+- X independently toggles a FireRed party-IV checker for that logical player.
+  It shows all six party slots with level, nickname, and
+  HP/Attack/Defense/Sp. Atk/Sp. Def/Speed IVs, and follows the player through
+  every screen arrangement. Party data is checksum-validated and sampled on
+  that instance's existing owner lane only once every 15 displayed frames
+  while visible. Unsupported ROMs and malformed records fail closed. A hidden
+  checker performs no memory reads or rendering.
 - One aggregate RetroArch save-RAM region contains three fixed player slices,
-  so player number, controller port, audio/speed/dialogue state, and save data
-  cannot exchange identities when screens are rearranged or the app restarts.
+  so player number, controller port, audio/speed/dialogue/IV-checker state, and
+  save data cannot exchange identities when screens are rearranged or the app
+  restarts. Checker visibility starts off on each content load and is not
+  stored in SRAM.
 - No link cable, subsystems, save states, rewind implementation, background
   autosave thread, or stock mGBA control core.
 
@@ -80,7 +89,7 @@ chmod +x scripts/*.sh
 The output is:
 
 ~~~text
-dist/RetroArchTV-mGBA-Multi-1.22.2-core-0.3.1-unsigned.ipa
+dist/RetroArchTV-mGBA-Multi-1.22.2-core-0.3.2-unsigned.ipa
 ~~~
 
 To fetch, verify, patch, and stage the pinned sources without invoking Xcode:
@@ -95,7 +104,8 @@ mGBA modules before the RetroArch Xcode build and verifies that no stock mGBA
 framework enters the app. Before cross-compiling, it runs exhaustive screen
 order/compositing, independent speed-scheduler, held-input release,
 audio-selection, bounded-FIFO, exact audio-cadence, rate-transition,
-RTC-container, and fail-closed FireRed dialogue detector tests.
+RTC-container, fail-closed FireRed dialogue detector, encrypted party-IV
+decoder, and bounded RGB565 overlay tests.
 
 ## Install and use
 
@@ -159,7 +169,16 @@ and choice, trainer-battle, scripted-encounter, native/special, malformed, and
 unknown paths remain at 1x with no injected input. The configured multiplier is
 a target and may be limited by available Apple TV processing time.
 
-The selected ROM is cloned into each active instance. Version 0.3.1 does not
+For either supported FireRed revision, press X on a player's controller to
+show that player's party-IV table and press X again to close it. Holding X does
+not repeatedly toggle, and multiple players may show their tables at once. The
+read-only table uses the conventional HP, Attack, Defense, Special Attack,
+Special Defense, and Speed order. Empty or corrupt records are labeled instead
+of guessed. It is tied to the logical player, so it moves with that player when
+**Screen order** changes. Unsupported ROMs leave it hidden and report that a
+clean FireRed USA 1.0/1.1 image is required.
+
+The selected ROM is cloned into each active instance. Version 0.3.2 does not
 load different ROMs into different screens. Do not use RetroArch save states
 with this core; battery-backed in-game saves use the aggregate `.srm` region.
 
@@ -174,7 +193,8 @@ reference.
 
 The validator requires the six-value screen-order option, audio selector, all
 three speed-target options, the R2 speed descriptor, both FireRed dialogue
-options, and the L2 dialogue descriptor. It rejects a stock mGBA framework, mGBA's
+options, the L2 dialogue descriptor, and the X IV-checker descriptor and
+overlay strings. It rejects a stock mGBA framework, mGBA's
 `mCoreThread`, link-cable symbols, removed link/subsystem strings, PlugIns and
 app extensions, provisioning profiles, an app-level Xcode signature, ROMs,
 AppleDouble files, and unexpected IPA top-level entries.
@@ -185,7 +205,7 @@ AppleDouble files, and unexpected IPA top-level entries.
 | --- | --- |
 | RetroArch | 1.22.2 / `69a4f0ea1e8aaf442ae4858f2e7f2b31a1776576` |
 | libretro/mGBA base | `7a12d6d4b9acb14c0ae62c9166b6a2f3d08007f6` |
-| mGBA Multi | core version 0.3.1 |
+| mGBA Multi | core version 0.3.2 |
 | Device architecture | arm64 tvOS |
 
 See [LICENSES.md](LICENSES.md) for source and redistribution obligations.

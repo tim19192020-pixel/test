@@ -225,7 +225,10 @@ if [ "$(uname -s)" = "Darwin" ]; then
     'FireRed dialogue speed (L2 toggle)' \
     'FireRed dialogue auto-advance; Enabled|Disabled' \
     'Toggle Speed' \
-    'Toggle FireRed Dialogue Assist'; do
+    'Toggle FireRed Dialogue Assist' \
+    'Toggle FireRed Party IV Checker' \
+    'P1 IV CHECKER' \
+    'IV RANGE 0-31'; do
     grep -F "$required_core_string" <<<"$core_strings" >/dev/null ||
       fail "mGBA Multi is missing required runtime feature: $required_core_string"
   done

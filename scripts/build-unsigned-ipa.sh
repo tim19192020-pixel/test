@@ -150,6 +150,9 @@ grep -F '#define SAVE_SLOT_SIZE (GBA_SIZE_FLASH1M + sizeof(struct GBASavedataRTC
 grep -F 'static uint8_t saveData[MULTI_MAX_INSTANCES][SAVE_SLOT_SIZE];' \
   "$mgba_dir/src/platform/libretro/libretro_multi.c" >/dev/null ||
   fail "mGBA Multi fixed P1/P2/P3 save container is missing"
+grep -F 'fireRedIvReadParty' \
+  "$mgba_dir/src/platform/libretro/libretro_multi.c" >/dev/null ||
+  fail "per-instance FireRed IV checker integration is missing"
 
 asset_zip="$retroarch_dir/pkg/apple/assets.zip"
 [ -f "$asset_zip" ] || fail "RetroArch Apple assets archive is missing"
@@ -227,6 +230,18 @@ xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror \
   "$mgba_dir/src/platform/libretro/libretro_firered_dialogue.c" \
   -o "$host_test_dir/libretro_firered_dialogue_test"
 "$host_test_dir/libretro_firered_dialogue_test"
+xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror -pedantic \
+  -I "$mgba_dir/src/platform/libretro" \
+  "$mgba_dir/tests/libretro_firered_iv_test.c" \
+  "$mgba_dir/src/platform/libretro/libretro_firered_iv.c" \
+  -o "$host_test_dir/libretro_firered_iv_test"
+"$host_test_dir/libretro_firered_iv_test"
+xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror -pedantic \
+  -I "$mgba_dir/src/platform/libretro" \
+  "$mgba_dir/tests/libretro_iv_overlay_test.c" \
+  "$mgba_dir/src/platform/libretro/libretro_iv_overlay.c" \
+  -o "$host_test_dir/libretro_iv_overlay_test"
+"$host_test_dir/libretro_iv_overlay_test"
 
 core_build="$build_root/mgba-tvos-build"
 derived_data="$build_root/RetroArchTV-DerivedData"
@@ -339,7 +354,10 @@ for required_core_string in \
   'FireRed dialogue speed (L2 toggle)' \
   'FireRed dialogue auto-advance; Enabled|Disabled' \
   'Toggle Speed' \
-  'Toggle FireRed Dialogue Assist'; do
+  'Toggle FireRed Dialogue Assist' \
+  'Toggle FireRed Party IV Checker' \
+  'P1 IV CHECKER' \
+  'IV RANGE 0-31'; do
   grep -F "$required_core_string" <<<"$core_strings" >/dev/null ||
     fail "mGBA Multi is missing required runtime feature: $required_core_string"
 done
@@ -496,6 +514,16 @@ rm -f -- "$ipa_path" "$dist_dir/SHA256SUMS.txt" "$dist_dir/BUILD-MANIFEST.txt"
   printf 'dialogue_battles_blocked=true\n'
   printf 'dialogue_choices_blocked=true\n'
   printf 'dialogue_detector_tests=true\n'
+  printf 'firered_party_iv_checker=true\n'
+  printf 'iv_checker_per_instance=true\n'
+  printf 'iv_checker_toggle=X\n'
+  printf 'iv_checker_refresh_frames=15\n'
+  printf 'iv_checker_checksum_validated=true\n'
+  printf 'iv_checker_owner_lane_snapshot=true\n'
+  printf 'iv_checker_supported_rom_sha1=41cb23d8dccc8ebd7c649cd8fbb58eeace6e2fdc,dd5945db9b930750cb39d00c84da8571feebf417\n'
+  printf 'iv_checker_unknown_rom_fail_closed=true\n'
+  printf 'iv_checker_save_format_unchanged=true\n'
+  printf 'iv_checker_tests=true\n'
   printf 'subsystems=false\n'
   printf 'savestates=false\n'
   printf 'stock_control_core=false\n'
